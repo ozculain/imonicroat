@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>smoke</title><link rel="stylesheet" href="../css/app.css"></head>
+<body>
+<div id="errors"></div>
+<div id="status">PENDING</div>
+<div id="app"></div>
+<script>
+  window.onerror = function (msg, src, line) {
+    document.getElementById('errors').textContent += 'ERR: ' + msg + ' @ ' + src + ':' + line + '\n';
+  };
+  window.addEventListener('unhandledrejection', function (e) {
+    document.getElementById('errors').textContent += 'REJ: ' + (e.reason && e.reason.message || e.reason) + '\n';
+  });
+</script>
+<script src="../js/icons.js"></script>
+<script src="../js/srs.js"></script>
+<script src="../js/db.js"></script>
+<script src="../js/sync.js"></script>
+<script src="../js/audio.js"></script>
+<script src="../js/content.js"></script>
+<script src="../js/exercises.js"></script>
+<script src="../js/app.js"></script>
+<script>
+  setTimeout(function () {
+    var app = document.getElementById('app');
+    var st = document.getElementById('status');
+    st.textContent = app.children.length ? ('RENDERED view=' + (window.CRO && CRO.app && CRO.app.state.view)) : 'EMPTY-APP';
+  }, 2500);
+</script>
+</body>
+</html>

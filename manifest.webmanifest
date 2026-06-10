@@ -1,0 +1,14 @@
+{
+  "name": "Imo i Nicro — hrvatski za nas dvoje",
+  "short_name": "Imo i Nicro",
+  "description": "Croatian for two — daily lessons on a real spaced-repetition engine.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#faf6ee",
+  "theme_color": "#1f6f8b",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

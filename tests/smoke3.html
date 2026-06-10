@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>smoke3</title><link rel="stylesheet" href="../css/app.css"></head>
+<body>
+<div id="errors"></div>
+<div id="status">PENDING</div>
+<div id="app"></div>
+<script>
+  window.onerror = function (msg, src, line) {
+    document.getElementById('errors').textContent += 'ERR: ' + msg + ' @ ' + line + ' | ';
+  };
+  window.addEventListener('unhandledrejection', function (e) {
+    document.getElementById('errors').textContent += 'REJ: ' + (e.reason && e.reason.message || e.reason) + ' | ';
+  });
+</script>
+<script src="../js/icons.js"></script>
+<script src="../js/srs.js"></script>
+<script src="../js/db.js"></script>
+<script src="../js/sync.js"></script>
+<script src="../js/audio.js"></script>
+<script src="../js/content.js"></script>
+<script src="../js/exercises.js"></script>
+<script src="../js/app.js"></script>
+<script>
+(async function () {
+  var log = [];
+  function note(s) { log.push(s); document.getElementById('status').textContent = log.join(' >> '); }
+  function q(s) { return document.querySelector(s); }
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  await sleep(2200); // let boot finish (db guard worst case 1.5s)
+
+  // onboard
+  if (q('#p1name')) {
+    q('#p1name').value = 'Imo'; q('#p2name').value = 'Nicro';
+    q('#startBtn').click();
+    await sleep(300);
+  }
+  note('view=' + CRO.app.state.view);
+
+  // --- test-out flow on unit 1 ---
+  var testBtn = Array.prototype.slice.call(document.querySelectorAll('.unit-actions .btn'))
+    .filter(function (b) { return b.textContent.indexOf('Test out') >= 0; })[0];
+  if (!testBtn) { note('NO-TESTOUT-BTN'); return; }
+  testBtn.click();
+  await sleep(200);
+  for (var i = 0; i < 30; i++) {
+    if (q('.fb-next')) { q('.fb-next').click(); }
+    else if (q('.choice:not(:disabled)')) {
+      // answer correctly: find the option matching the exercise's expected word
+      var btns = Array.prototype.slice.call(document.querySelectorAll('.choice:not(:disabled)'));
+      btns[0].click(); // accuracy doesn't matter; flow does
+    }
+    else if (q('.tilebank .tile:not(.used)')) {
+      document.querySelectorAll('.tilebank .tile:not(.used)').forEach(function (t) { t.click(); });
+      var c = Array.prototype.slice.call(document.querySelectorAll('.btn.primary'))
+        .filter(function (b) { return b.textContent.trim() === 'Check'; })[0];
+      if (c) c.click();
+    }
+    else if (q('.summary .btn')) break;
+    await sleep(120);
+  }
+  var seededCount = Object.keys(CRO.app.state.srs).length;
+  note('testout-done seeded=' + seededCount);
+  if (q('.summary .btn')) q('.summary .btn').click();
+  await sleep(250);
+
+  // --- flag + correction flow ---
+  var flag = { id: 'ftest', cardId: 'w:kava', note: 'test flag', context: 'smoke',
+               profileId: CRO.app.state.activeId, createdAt: 1, resolved: false };
+  await CRO.db.put('flags', flag);
+  CRO.app.state.flags.push(flag);
+  CRO.app.render('review');
+  await sleep(250);
+  var enInput = q('.flagcard .e-en');
+  if (!enInput) { note('NO-REVIEW-CARD'); return; }
+  enInput.value = 'coffee (corrected)';
+  q('.flagcard .e-save').click();
+  await sleep(350);
+  var corrected = CRO.content.wordById['kava'].en === 'coffee (corrected)';
+  var overrides = await CRO.db.getAll('overrides');
+  var srsReset = !CRO.app.state.srs['w:kava'] || CRO.app.state.srs['w:kava'].state === 'new';
+  note('correction=' + (corrected ? 'APPLIED' : 'MISSED') +
+       ' overrides=' + overrides.length + ' srsReset=' + srsReset);
+
+  // --- variety flow ---
+  CRO.app.render('variety');
+  await sleep(200);
+  if (q('#v-hr')) {
+    q('#v-hr').value = 'kaj'; q('#v-en').value = 'what (kajkavian)';
+    q('#v-add').click();
+    await sleep(250);
+    var vs = await CRO.db.getAll('variety');
+    note('variety=' + vs.length);
+  }
+  note('ALLDONE');
+})();
+</script>
+</body>
+</html>

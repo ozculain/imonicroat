@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>smoke2</title><link rel="stylesheet" href="../css/app.css"></head>
+<body>
+<div id="errors"></div>
+<div id="status">PENDING</div>
+<div id="app"></div>
+<script>
+  window.onerror = function (msg, src, line) {
+    document.getElementById('errors').textContent += 'ERR: ' + msg + ' @ ' + src + ':' + line + ' | ';
+  };
+  window.addEventListener('unhandledrejection', function (e) {
+    document.getElementById('errors').textContent += 'REJ: ' + (e.reason && (e.reason.message + ' ' + (e.reason.stack||'').split('\n')[1]) || e.reason) + ' | ';
+  });
+</script>
+<script src="../js/icons.js"></script>
+<script src="../js/srs.js"></script>
+<script src="../js/db.js"></script>
+<script src="../js/sync.js"></script>
+<script src="../js/audio.js"></script>
+<script src="../js/content.js"></script>
+<script src="../js/exercises.js"></script>
+<script src="../js/app.js"></script>
+<script>
+(function () {
+  var log = [];
+  function note(s) { log.push(s); document.getElementById('status').textContent = log.join(' >> '); }
+  function q(sel) { return document.querySelector(sel); }
+
+  var steps = [
+    function onboard() {
+      if (!q('#p1name')) return false;
+      q('#p1name').value = 'Imo';
+      q('#p2name').value = 'Nicro';
+      q('#startBtn').click();
+      note('onboarded');
+      return true;
+    },
+    function home() {
+      if (!q('#startLesson')) return false;
+      note('home(profiles=' + CRO.app.state.profiles.length + ')');
+      q('#startLesson').click();
+      note('lessonStarted(steps=' + (CRO.app.state.session ? CRO.app.state.session.steps.length : 0) + ')');
+      return true;
+    },
+    function drive() {
+      // drive up to 80 interactions of the lesson loop
+      if (!CRO.app.state.session && CRO.app.state.view !== 'summary') return false;
+      var clicks = 0;
+      (function tick() {
+        if (clicks++ > 80) { note('LOOP-LIMIT'); return finish(); }
+        if (CRO.app.state.view === 'summary' || !CRO.app.state.session) return finish();
+        var intro = q('#introNext');
+        if (intro) { intro.click(); return setTimeout(tick, 30); }
+        var fbNext = q('.fb-next');
+        if (fbNext) { fbNext.click(); return setTimeout(tick, 30); }
+        var choice = q('.choice:not(:disabled)');
+        if (choice) { choice.click(); return setTimeout(tick, 30); }
+        var pair = q('.pairbtn:not(.done)');
+        if (pair) {
+          // match pairs correctly via state: click hr then matching en by text
+          var btns = Array.prototype.slice.call(document.querySelectorAll('.pairbtn:not(.done)'));
+          if (btns.length >= 2) {
+            // brute force: click first, then try others until one matches
+            btns[0].click();
+            for (var i = 1; i < btns.length; i++) btns[i].click();
+            return setTimeout(tick, 450);
+          }
+        }
+        var typed = q('input.typed');
+        if (typed) {
+          // answer typed exercises correctly using the live exercise data is hard
+          // from outside; type something wrong, accept the Again path.
+          typed.value = 'xyz';
+          var check = Array.prototype.slice.call(document.querySelectorAll('.btn.primary'))
+            .filter(function (b) { return b.textContent.trim() === 'Check'; })[0];
+          if (check) { check.click(); return setTimeout(tick, 30); }
+        }
+        var tile = q('.tile:not(.used):not(.placed)');
+        if (tile) {
+          var tiles = document.querySelectorAll('.tilebank .tile:not(.used)');
+          tiles.forEach(function (t) { t.click(); });
+          var check2 = Array.prototype.slice.call(document.querySelectorAll('.btn.primary'))
+            .filter(function (b) { return b.textContent.trim() === 'Check'; })[0];
+          if (check2) { check2.click(); }
+          return setTimeout(tick, 30);
+        }
+        setTimeout(tick, 80);
+      })();
+      function finish() {
+        var srsCount = Object.keys(CRO.app.state.srs).length;
+        note('DONE view=' + CRO.app.state.view + ' srsCards=' + srsCount +
+             (srsCount > 0 ? ' OK' : ' NO-CARDS'));
+      }
+      return true;
+    }
+  ];
+
+  var i = 0;
+  var t = setInterval(function () {
+    if (i >= steps.length) { clearInterval(t); return; }
+    try { if (steps[i]()) i += 1; }
+    catch (e) { document.getElementById('errors').textContent += 'DRV: ' + e.message + ' | '; clearInterval(t); }
+  }, 400);
+})();
+</script>
+</body>
+</html>
