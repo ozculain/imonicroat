@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>smoke4</title></head><body>
+<div id="status">PENDING</div>
+<div id="app"></div>
+<script src="../js/icons.js"></script>
+<script src="../js/srs.js"></script>
+<script src="../js/db.js"></script>
+<script src="../js/vault.js"></script>
+<script src="../js/sync.js"></script>
+<script src="../js/audio.js"></script>
+<script src="../js/content.js"></script>
+<script src="../js/exercises.js"></script>
+<script>
+(async function () {
+  var st = document.getElementById('status');
+  var out = [];
+  function mark(s) { out.push(s); st.textContent = out.join(' '); }
+  mark('secure=' + window.isSecureContext);
+  try {
+    var enc = new TextEncoder();
+    mark('enc-ok');
+    var km = await window.crypto.subtle.importKey('raw', enc.encode('test1234'), 'PBKDF2', false, ['deriveBits']);
+    mark('importKey-ok');
+    var salt = window.crypto.getRandomValues(new Uint8Array(16));
+    mark('rand-ok');
+    var bits = await window.crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations: 1000, hash: 'SHA-256' }, km, 256);
+    mark('deriveBits-ok@' + Math.round(performance.now()) + 'ms');
+    var t0 = performance.now();
+    await window.crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations: 10000, hash: 'SHA-256' }, km, 256);
+    mark('10k-iters=' + Math.round(performance.now() - t0) + 'ms');
+    await CRO.db.setMeta('probe', 1);
+    mark('setMeta-ok');
+    await CRO.vault.setPassphrase('test1234');
+    mark('setPass-ok');
+  } catch (e) {
+    mark('ERR=' + e.message);
+  }
+  mark('DONE');
+})();
+</script>
+</body></html>

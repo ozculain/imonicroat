@@ -13,9 +13,11 @@
     document.getElementById('errors').textContent += 'REJ: ' + (e.reason && e.reason.message || e.reason) + ' | ';
   });
 </script>
+<script>window.__CRO_TEST_NOCRYPTO = true;</script>
 <script src="../js/icons.js"></script>
 <script src="../js/srs.js"></script>
 <script src="../js/db.js"></script>
+<script src="../js/vault.js"></script>
 <script src="../js/sync.js"></script>
 <script src="../js/audio.js"></script>
 <script src="../js/content.js"></script>
@@ -33,6 +35,7 @@
   // onboard
   if (q('#p1name')) {
     q('#p1name').value = 'Imo'; q('#p2name').value = 'Nicro';
+    q('#passA').value = 'test1234'; q('#passB').value = 'test1234';
     q('#startBtn').click();
     await sleep(300);
   }
@@ -45,7 +48,8 @@
   testBtn.click();
   await sleep(200);
   for (var i = 0; i < 30; i++) {
-    if (q('.fb-next')) { q('.fb-next').click(); }
+    if (q('#contBtn')) { q('#contBtn').click(); }
+    else if (q('.fb-next')) { q('.fb-next').click(); }
     else if (q('.choice:not(:disabled)')) {
       // answer correctly: find the option matching the exercise's expected word
       var btns = Array.prototype.slice.call(document.querySelectorAll('.choice:not(:disabled)'));
@@ -93,6 +97,19 @@
     var vs = await CRO.db.getAll('variety');
     note('variety=' + vs.length);
   }
+  // --- lock cycle: lock, fail wrong pass, unlock with right pass ---
+  await CRO.vault.lockNow();
+  CRO.app.boot();
+  await sleep(2200);
+  var locked = !!q('#lockPass');
+  if (locked) {
+    q('#lockPass').value = 'WRONG';
+    q('#lockBtn').click(); await sleep(600);
+    var rejected = q('#lockErr') && q('#lockErr').style.display !== 'none';
+    q('#lockPass').value = 'test1234';
+    q('#lockBtn').click(); await sleep(2200);
+    note('lock=' + (locked ? 'SHOWN' : 'MISSING') + ' wrongRejected=' + rejected + ' unlockedView=' + CRO.app.state.view);
+  } else { note('lock=MISSING'); }
   note('ALLDONE');
 })();
 </script>

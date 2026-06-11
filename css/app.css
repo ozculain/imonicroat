@@ -374,6 +374,37 @@ input.typed:focus { border-color: var(--accent-blue); }
   border: 1.5px solid var(--line); border-radius: 9px; background: var(--paper); outline: none;
 }
 .syncopt input:focus { border-color: var(--accent-blue); }
+
+/* ---------- teaching screens ---------- */
+.teachcard { border-left: 4px solid var(--accent-blue); }
+.teach-title { font-family: var(--serif); font-size: 24px; margin-bottom: 8px; }
+.teach-body { font-size: 15px; line-height: 1.65; color: var(--ink); }
+.teach-example {
+  margin-top: 14px; background: var(--paper); border: 1px solid var(--line);
+  border-radius: 11px; padding: 12px 15px; font-family: var(--serif); font-size: 18px;
+}
+.teach-example-en { display: block; font-family: var(--sans); font-size: 13px; color: var(--ink-soft); margin-top: 3px; }
+.teachcard .btn { margin-top: 18px; }
+.sent-hr { font-size: 26px; }
+.glossrow { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.gloss {
+  background: var(--paper); border: 1px solid var(--line); border-radius: 9px;
+  padding: 4px 10px; font-size: 12.5px; color: var(--ink-soft);
+}
+.gloss b { display: block; font-family: var(--serif); font-size: 14.5px; color: var(--ink); font-weight: 600; }
+.unit-coming { font-size: 13px; color: var(--ink-soft); margin-top: 12px; line-height: 1.8; }
+.unit-coming b { color: var(--accent-blue); font-weight: 600; }
+
+/* ---------- recap & lock ---------- */
+.recap { text-align: left; background: var(--paper); border: 1px solid var(--line); border-radius: 11px; padding: 12px 15px; margin: 4px 0 14px; }
+.recap-row { font-size: 13px; color: var(--ink-soft); line-height: 2; }
+.recap-row b { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent-blue); }
+.recap-chip {
+  background: #fffdf8; border: 1px solid var(--line); border-radius: 99px;
+  padding: 2px 10px; font-size: 12.5px; color: var(--ink); margin-right: 3px;
+}
+.bad-hint { color: var(--bad) !important; }
+.lockcard { max-width: 360px; margin: 0 auto; }
 .empty { color: var(--ink-soft); font-style: italic; margin: 20px 0; }
 
 /* ---------- variety ---------- */

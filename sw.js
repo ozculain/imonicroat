@@ -3,7 +3,7 @@
    from cache, silent refresh in the background, new version on next open. */
 'use strict';
 
-const VERSION = 'imonicroat-v1';
+const VERSION = 'imonicroat-v2';
 const FILES = [
   './',
   'index.html',
@@ -11,6 +11,7 @@ const FILES = [
   'js/icons.js',
   'js/srs.js',
   'js/db.js',
+  'js/vault.js',
   'js/sync.js',
   'js/audio.js',
   'js/content.js',

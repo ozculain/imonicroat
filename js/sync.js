@@ -126,20 +126,40 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return (await r.json()).id;
   }
 
-  /* ---- transport-agnostic sync ---- */
+  /* ---- transport-agnostic sync (payloads are E2E-encrypted when a
+          household passphrase exists — see js/vault.js) ---- */
+  async function maybeDecrypt(payload) {
+    if (!payload) return null;
+    if (!CRO.vault || !CRO.vault.isEnvelope(payload)) return payload; // legacy plaintext
+    const pass = await CRO.vault.getPassphrase();
+    if (!pass) throw new Error('passphrase-needed: remote data is encrypted.');
+    try { return await CRO.vault.decrypt(payload, pass); }
+    catch (e) { throw new Error('Wrong household passphrase for the synced data.'); }
+  }
+
+  async function maybeEncrypt(merged) {
+    const pass = CRO.vault ? await CRO.vault.getPassphrase() : null;
+    return pass ? CRO.vault.encrypt(merged, pass) : merged;
+  }
+
   async function readRemote() {
-    if (status.transport === 'gist') return gistRead();
-    try {
-      const file = await handle.getFile();
-      const text = await file.text();
-      return text.trim() ? JSON.parse(text) : null;
-    } catch (e) { return null; /* unreadable/empty → treat as fresh */ }
+    let payload = null;
+    if (status.transport === 'gist') payload = await gistRead();
+    else {
+      try {
+        const file = await handle.getFile();
+        const text = await file.text();
+        payload = text.trim() ? JSON.parse(text) : null;
+      } catch (e) { payload = null; /* unreadable/empty → treat as fresh */ }
+    }
+    return maybeDecrypt(payload);
   }
 
   async function writeRemote(merged) {
-    if (status.transport === 'gist') return gistWrite(merged);
+    const payload = await maybeEncrypt(merged);
+    if (status.transport === 'gist') return gistWrite(payload);
     const w = await handle.createWritable();
-    await w.write(JSON.stringify(merged));
+    await w.write(JSON.stringify(payload));
     await w.close();
   }
 

@@ -55,6 +55,8 @@
     CRO.audio.init();
     // refresh the home screen if a Croatian voice appears after first render
     CRO.audio.onChange(() => { if (state.view === 'home') render('home'); });
+    // household lock: gate everything behind the passphrase on this device
+    if (!(await CRO.vault.isUnlocked())) { renderLock(); return; }
     await CRO.sync.init(); // pull partner's progress before loading state
     state.profiles = await CRO.db.getAll('profiles');
     state.overrides = await CRO.db.getAll('overrides');
@@ -212,6 +214,32 @@
     return h;
   }
 
+  /* ================= lock screen ================= */
+  function renderLock() {
+    const root = $('#app');
+    root.innerHTML = '';
+    const wrap = el('div', 'onboard');
+    wrap.innerHTML = `
+      <div class="onboard-art">${CRO.icons.sahovnica(5, 5, 18)}</div>
+      <h1>Imo i Nicro</h1>
+      <p class="lede">Private household app — enter the passphrase.</p>
+      <div class="card form-card lockcard">
+        <label>Passphrase <input type="password" id="lockPass" autocomplete="current-password"></label>
+        <label class="check"><input type="checkbox" id="lockRemember" checked> remember on this device</label>
+        <p class="hint bad-hint" id="lockErr" style="display:none">Wrong passphrase.</p>
+        <button class="btn primary" id="lockBtn">Unlock</button>
+      </div>`;
+    root.appendChild(wrap);
+    const tryUnlock = async () => {
+      const ok = await CRO.vault.unlock($('#lockPass').value, $('#lockRemember').checked);
+      if (ok) { boot(); }
+      else { $('#lockErr').style.display = 'block'; $('#lockPass').select(); }
+    };
+    $('#lockBtn').onclick = tryUnlock;
+    $('#lockPass').addEventListener('keydown', e => { if (e.key === 'Enter') tryUnlock(); });
+    $('#lockPass').focus();
+  }
+
   /* ================= onboarding ================= */
   function viewOnboarding(root) {
     const wrap = el('div', 'onboard');
@@ -219,16 +247,23 @@
       <div class="onboard-art">${CRO.icons.sahovnica(5, 5, 18)}</div>
       <h1>Imo i Nicro</h1>
       <p class="lede">Croatian for the two of you — short daily lessons on top of a real
-      spaced-repetition engine, with every rule and word sourced.</p>
+      spaced-repetition engine, with every rule and word sourced. This is a private
+      household app: everything is locked behind your passphrase and your synced data
+      is end-to-end encrypted.</p>
       <div class="card form-card">
-        <h2>Who is learning?</h2>
+        <h2>Set up your household</h2>
         <label>First learner <input id="p1name" placeholder="Name" maxlength="14"></label>
         <label class="check"><input type="checkbox" id="p1known"> already speaks some Croatian</label>
         <hr>
         <label>Second learner <input id="p2name" placeholder="Name (optional)" maxlength="14"></label>
         <label class="check"><input type="checkbox" id="p2known"> already speaks some Croatian</label>
+        <hr>
+        <label>Household passphrase <input type="password" id="passA" autocomplete="new-password" placeholder="something you both remember"></label>
+        <label>Repeat it <input type="password" id="passB" autocomplete="new-password"></label>
+        <p class="hint bad-hint" id="passErr" style="display:none"></p>
         <button class="btn primary" id="startBtn">Počnimo! · Let's begin</button>
-        <p class="hint">Each of you gets your own progress and schedule. The streak is shared —
+        <p class="hint">The passphrase locks the app on every device and encrypts everything
+        that syncs between you. Each of you gets your own progress; the streak is shared —
         it only grows on days you <em>both</em> practise.</p>
         <hr>
         <button class="btn ghost" id="connectBtn">${ic('refresh', 15)} Already set up on another device? Connect sync</button>
@@ -242,6 +277,7 @@
         <h3>${ic('refresh', 18)} Connect to your existing setup</h3>
         <div class="syncopt">
           <h4>GitHub sync <span class="hint-inline">— any device</span></h4>
+          <label class="modal-label">Household passphrase <input type="password" id="ob-pass" autocomplete="off"></label>
           <label class="modal-label">GitHub token <input id="ob-token" placeholder="ghp_…" autocomplete="off"></label>
           <label class="modal-label">Gist id <input id="ob-gist" placeholder="shown in Settings on the first device"></label>
           <button class="btn primary" id="ob-gconnect">Connect</button>
@@ -265,10 +301,22 @@
         m.close();
         render('home');
       }
-      m.body.querySelector('#ob-gconnect').onclick = async () =>
-        afterConnect(await CRO.sync.setupGist($('#ob-token').value, $('#ob-gist').value));
+      m.body.querySelector('#ob-gconnect').onclick = async () => {
+        const pass = $('#ob-pass').value;
+        if (!pass) { toast('Enter the household passphrase.'); return; }
+        await CRO.db.setMeta('passphrase', pass); // needed to decrypt the remote data
+        const ok = await CRO.sync.setupGist($('#ob-token').value, $('#ob-gist').value);
+        if (ok) await CRO.vault.setPassphrase(pass); // adopt the lock locally too
+        afterConnect(ok);
+      };
       const fbtn = m.body.querySelector('#ob-fconnect');
-      if (fbtn) fbtn.onclick = async () => afterConnect(await CRO.sync.setup(false));
+      if (fbtn) fbtn.onclick = async () => {
+        const pass = $('#ob-pass').value;
+        if (pass) await CRO.db.setMeta('passphrase', pass);
+        const ok = await CRO.sync.setup(false);
+        if (ok && pass) await CRO.vault.setPassphrase(pass);
+        afterConnect(ok);
+      };
     };
     $('#startBtn').onclick = async () => {
       const mk = (name, known, hue) => ({
@@ -277,6 +325,10 @@
       });
       const n1 = $('#p1name').value.trim();
       if (!n1) { $('#p1name').focus(); return; }
+      const pa = $('#passA').value, pb = $('#passB').value, perr = $('#passErr');
+      if (pa.length < 4) { perr.textContent = 'Pick a passphrase of at least 4 characters.'; perr.style.display = 'block'; $('#passA').focus(); return; }
+      if (pa !== pb) { perr.textContent = 'The two passphrases don\'t match.'; perr.style.display = 'block'; $('#passB').focus(); return; }
+      await CRO.vault.setPassphrase(pa);
       const p1 = mk(n1, $('#p1known').checked, 205);
       await CRO.db.put('profiles', p1);
       state.profiles = [p1];
@@ -670,6 +722,17 @@
       <label class="check"><input type="checkbox" id="s-var" ${state.settings.showVariety ? 'checked' : ''}> show family-variety chips in lessons</label>
       <p class="hint">${ic(audioOk ? 'speaker' : 'speakerOff', 14)} ${audioOk ? 'Croatian voice: ' + CRO.audio.voiceLabel() : 'No Croatian voice found. On Windows, add one under Settings → Time & Language → Speech → Add voices → Croatian; Chrome also ships a Google hrvatski voice when online.'}</p>
       <hr>
+      <h3 class="settings-h">${ic('gear', 16)} Household passphrase</h3>
+      <p class="hint" id="s-lockstatus"></p>
+      <div class="row">
+        <input type="password" id="s-pass" placeholder="new passphrase" style="flex:1">
+        <button class="btn ghost small" id="s-setpass">Set</button>
+        <button class="btn ghost small" id="s-locknow">Lock now</button>
+      </div>
+      <p class="hint">Locks the app on this device and end-to-end encrypts everything that syncs.
+      Use the same passphrase on every device. If you change it, change it everywhere and run
+      “Sync now” from this device first.</p>
+      <hr>
       <h3 class="settings-h">${ic('refresh', 16)} Sync between devices</h3>
       <p class="hint" id="s-syncstatus"></p>
       <div id="s-syncbody"></div>
@@ -681,6 +744,27 @@
       <p class="hint">Manual fallback: all data lives in this browser (IndexedDB) and works offline; the backup file carries both profiles, all corrections and the variety layer.</p>
       <input type="file" id="s-file" accept=".json" style="display:none">`;
     main.appendChild(card);
+
+    // passphrase section wiring
+    (async () => {
+      $('#s-lockstatus').textContent = (await CRO.vault.hasLock())
+        ? 'A passphrase is set on this device.'
+        : 'No passphrase yet — set one to lock the app and encrypt sync.';
+    })();
+    $('#s-setpass').onclick = async () => {
+      const p = $('#s-pass').value;
+      if (p.length < 4) { toast('At least 4 characters.'); return; }
+      await CRO.vault.setPassphrase(p);
+      $('#s-pass').value = '';
+      $('#s-lockstatus').textContent = 'A passphrase is set on this device.';
+      CRO.sync.syncNow('rekey'); // re-encrypt the remote copy under the new key
+      toast('Passphrase set — synced data is now encrypted with it.');
+    };
+    $('#s-locknow').onclick = async () => {
+      if (!(await CRO.vault.hasLock())) { toast('Set a passphrase first.'); return; }
+      await CRO.vault.lockNow();
+      location.reload();
+    };
 
     // sync section wiring
     function renderSyncRow() {
@@ -833,7 +917,16 @@
     step();
   }
 
-  /* ================= lesson session ================= */
+  /* ================= lesson session =================
+     The lesson teaches before it tests:
+       1. unit opener (first time you enter a unit)
+       2. each new word: intro screen → easy recognition
+       3. each new sentence: grammar screen (first time the concept appears)
+            → teach screen with word-by-word gloss → recognise the meaning
+       4. due reviews (graded by FSRS maturity)
+       5. second, harder pass over today's new words
+       6. recap on the summary screen
+  */
   function startSession() {
     CRO.ex.reseed(Date.now());
     const now = Date.now();
@@ -841,18 +934,49 @@
     const newWords = nextNewWords(NEW_WORDS_PER_LESSON());
     const newSents = availableNewSentences(3, newWords.map(w => w.id));
 
-    // intros first, each followed by its first exercise; then the rest shuffled
     const steps = [];
+    const learned = { words: newWords, grammar: [], sentences: newSents };
+
+    // 1. unit opener when this lesson is the first visit to a unit
+    if (newWords.length) {
+      const u = CRO.content.UNITS.find(x => x.n === newWords[0].unit);
+      const unitTouched = Object.keys(state.srs).some(id =>
+        id.startsWith('w:') && CRO.content.wordById[id.slice(2)] &&
+        CRO.content.wordById[id.slice(2)].unit === u.n);
+      if (u && !unitTouched) steps.push({ kind: 'unitIntro', unit: u });
+    }
+
+    // 2. new words: teach, then recognise
     newWords.forEach(w => {
       steps.push({ kind: 'intro', word: w });
       steps.push({ kind: 'ex', make: () => CRO.ex.exerciseFor('w:' + w.id, 'new', CRO.audio.available()) });
     });
+
+    // 3. new sentences: grammar concept → teach screen → easy exercise
+    const alreadyTaught = new Set(
+      CRO.content.SENTENCES.filter(s => state.srs['s:' + s.id]).flatMap(s => s.grammar || []));
+    newSents.forEach(s => {
+      (s.grammar || []).forEach(gid => {
+        if (!alreadyTaught.has(gid) && CRO.content.gramById[gid]) {
+          alreadyTaught.add(gid);
+          learned.grammar.push(CRO.content.gramById[gid]);
+          steps.push({ kind: 'grammar', g: CRO.content.gramById[gid], sent: s });
+        }
+      });
+      steps.push({ kind: 'sentTeach', sent: s });
+      steps.push({ kind: 'ex', make: () => CRO.ex.exerciseFor('s:' + s.id, 'new', CRO.audio.available()) });
+    });
+
+    // 4. due reviews
     const rest = [];
-    newSents.forEach(s => rest.push({ kind: 'ex', make: () => CRO.ex.exerciseFor('s:' + s.id, 'new', CRO.audio.available()) }));
     due.forEach(c => rest.push({ kind: 'ex', make: () => CRO.ex.exerciseFor(c.cardId, CRO.srs.maturity(c), CRO.audio.available()) }));
+
+    // 5. second pass over today's new words, one notch harder
+    newWords.forEach(w => rest.push({ kind: 'ex', make: () => CRO.ex.exerciseFor('w:' + w.id, 'learning', CRO.audio.available()) }));
+
     const all = steps.concat(CRO.ex.shuffle(rest));
 
-    // a pair-matching break in the middle if enough words are in play
+    // pair-matching break in the middle if enough words are in play
     const sessionWordIds = newWords.map(w => w.id)
       .concat(due.filter(c => c.cardId.startsWith('w:')).map(c => c.cardId.slice(2)));
     if (sessionWordIds.length >= 5) {
@@ -861,7 +985,11 @@
     }
 
     if (!all.length) { toast('Nothing due — come back later today!'); return; }
-    state.session = { steps: all, idx: 0, xp: 0, correct: 0, total: 0, requeued: {} };
+    const unit = newWords.length ? CRO.content.UNITS.find(x => x.n === newWords[0].unit) : currentUnit();
+    state.session = {
+      steps: all, idx: 0, xp: 0, correct: 0, total: 0, requeued: {},
+      learned, title: unit ? `Unit ${unit.n} · ${unit.hrTitle}` : 'Review'
+    };
     render('lesson');
   }
 
@@ -882,6 +1010,18 @@
       renderIntro(main, step.word, () => { s.idx += 1; nextStep(main); });
       return;
     }
+    if (step.kind === 'unitIntro') {
+      renderUnitIntro(main, step.unit, () => { s.idx += 1; nextStep(main); });
+      return;
+    }
+    if (step.kind === 'grammar') {
+      renderGrammarTeach(main, step.g, step.sent, () => { s.idx += 1; nextStep(main); });
+      return;
+    }
+    if (step.kind === 'sentTeach') {
+      renderSentTeach(main, step.sent, () => { s.idx += 1; nextStep(main); });
+      return;
+    }
     if (step.kind === 'pairs') {
       renderPairs(main, step.words, async (perWordOk) => {
         for (const [wid, ok] of Object.entries(perWordOk)) {
@@ -889,7 +1029,7 @@
           s.total += 1; if (ok) { s.correct += 1; s.xp += XP_CORRECT / 2; }
         }
         s.idx += 1; nextStep(main);
-      }, { progress: { done: s.idx, total: s.steps.length }, onQuit: quitSession });
+      }, sessionChromeOpts());
       return;
     }
 
@@ -898,6 +1038,7 @@
     renderExercise(main, ex, {
       progress: { done: s.idx, total: s.steps.length },
       onQuit: quitSession,
+      title: state.session.title,
       async onResult(res, ex2, ms) {
         s.total += 1;
         if (ex2.cardId) {
@@ -947,11 +1088,20 @@
     if (sInfo.todayComplete) streakLine = `${ic('flame', 22)} Shared streak: <b>${sInfo.streak}</b> — both of you practised today.`;
     else if (partner) streakLine = `${ic('flameDim', 22)} Your half is done. The streak ticks to <b>${sInfo.streak + 1}</b> once ${partner.name} practises today.`;
     else streakLine = `${ic('flame', 22)} Streak: <b>${sInfo.streak}</b>`;
+    const learned = s.learned || { words: [], grammar: [], sentences: [] };
+    let recap = '';
+    if (learned.words.length || learned.grammar.length) {
+      recap = `<div class="recap">
+        ${learned.words.length ? `<div class="recap-row"><b>New words</b> ${learned.words.map(w => `<span class="recap-chip">${esc(w.hr.split(' / ')[0])}</span>`).join(' ')}</div>` : ''}
+        ${learned.grammar.length ? `<div class="recap-row"><b>New grammar</b> ${learned.grammar.map(g => `<span class="recap-chip">${esc(g.title)}</span>`).join(' ')}</div>` : ''}
+      </div>`;
+    }
     const card = el('div', 'summary card');
     card.innerHTML = `
       <div class="sum-sah">${CRO.icons.sahovnica(8, Math.round(acc / 100 * 8), 14)}</div>
       <h2>Lekcija gotova!</h2>
       <p class="sum-stats">+${Math.round(s.xp)} XP · ${acc}% correct</p>
+      ${recap}
       <p class="sum-streak">${streakLine}</p>
       <div class="row center">
         <button class="btn primary" id="sumHome">Continue</button>
@@ -1008,7 +1158,7 @@
 
   /** Intro screen for a new word. */
   function renderIntro(main, word, onNext) {
-    const stage = lessonChrome(main, { progress: sessionProgress(), onQuit: quitSession });
+    const stage = lessonChrome(main, sessionChromeOpts());
     const genderTag = word.g ? `<span class="gender g-${word.g}">${({ m: 'muški · m', f: 'ženski · f', n: 'srednji · n' })[word.g]}</span>` : '';
     const vars = state.settings.showVariety ? varietyFor(word.id) : [];
     const box = el('div', 'introcard card');
@@ -1036,6 +1186,69 @@
   function sessionProgress() {
     const s = state.session;
     return s ? { done: s.idx, total: s.steps.length } : { done: 0, total: 1 };
+  }
+
+  function sessionChromeOpts() {
+    return { progress: sessionProgress(), onQuit: quitSession, title: state.session && state.session.title };
+  }
+
+  /** Unit opener — where you are and why this unit matters. */
+  function renderUnitIntro(main, unit, onNext) {
+    const stage = lessonChrome(main, sessionChromeOpts());
+    const grams = CRO.content.GRAMMAR.filter(g => g.unit === unit.n);
+    const box = el('div', 'introcard card');
+    box.innerHTML = `
+      <div class="intro-label">${ic('book', 15)} unit ${unit.n}</div>
+      <div class="intro-hr">${esc(unit.hrTitle)}</div>
+      <div class="intro-en">${esc(unit.title)}</div>
+      <div class="intro-note">${esc(unit.blurb)}</div>
+      ${grams.length ? `<p class="unit-coming">Coming up in this unit: ${grams.map(g => '<b>' + esc(g.title) + '</b>').join(' · ')}</p>` : ''}
+      <button class="btn primary" id="contBtn">Start</button>`;
+    stage.appendChild(box);
+    box.querySelector('#contBtn').onclick = onNext;
+  }
+
+  /** Grammar teach screen — the rule, taught before it is ever tested. */
+  function renderGrammarTeach(main, g, exampleSent, onNext) {
+    const stage = lessonChrome(main, sessionChromeOpts());
+    const box = el('div', 'introcard card teachcard');
+    box.innerHTML = `
+      <div class="intro-label">${ic('sparkle', 15)} new grammar</div>
+      <div class="teach-title">${esc(g.title)}</div>
+      <p class="teach-body">${esc(g.body)}</p>
+      ${exampleSent ? `<div class="teach-example">${esc(exampleSent.hr)} ${audioBtnHtml(exampleSent.hr)}<span class="teach-example-en">${esc(exampleSent.en)}</span></div>` : ''}
+      <div class="srcline">${sourceChips(g.source)}</div>
+      <button class="btn primary" id="contBtn">Got it</button>`;
+    stage.appendChild(box);
+    bindAudioBtns(box);
+    box.querySelector('#contBtn').onclick = onNext;
+  }
+
+  /** Sentence teach screen — full sentence, audio, word-by-word gloss. */
+  function renderSentTeach(main, sent, onNext) {
+    const stage = lessonChrome(main, sessionChromeOpts());
+    const gloss = (sent.words || [])
+      .map(id => CRO.content.wordById[id])
+      .filter(Boolean)
+      .map(w => `<span class="gloss"><b>${esc(w.hr.split(' / ')[0])}</b> ${esc(w.en.split(' / ')[0].split(' (')[0])}</span>`)
+      .join('');
+    const box = el('div', 'introcard card teachcard');
+    box.innerHTML = `
+      <div class="intro-label">${ic('sparkle', 15)} new sentence</div>
+      <div class="intro-hr sent-hr">${esc(sent.hr)} ${audioBtnHtml(sent.hr)}</div>
+      <div class="intro-en">${esc(sent.en)}</div>
+      ${gloss ? `<div class="glossrow">${gloss}</div>` : ''}
+      ${sent.note ? `<div class="intro-note">${esc(sent.note)}</div>` : ''}
+      <div class="srcline">${sourceChips(sent.source)}</div>
+      <button class="btn primary" id="contBtn">Got it</button>`;
+    stage.appendChild(box);
+    const tools = el('div', 'extools');
+    tools.appendChild(notesBtnEl('s:' + sent.id));
+    tools.appendChild(flagBtnEl('s:' + sent.id, 'teach screen'));
+    box.prepend(tools);
+    bindAudioBtns(box);
+    if (CRO.audio.available()) CRO.audio.speak(sent.hr);
+    box.querySelector('#contBtn').onclick = onNext;
   }
 
   /** Generic exercise renderer. opts.onResult(res, ex, ms) */

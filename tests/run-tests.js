@@ -314,6 +314,24 @@ console.log('Sync merge');
   t('merge idempotent (variety)', JSON.stringify(M2.variety) === JSON.stringify(M.variety));
 }
 
+/* ================= vault (E2E crypto) ================= */
+console.log('Vault crypto');
+const vaultTests = (async () => {
+  const vault = require(path.join(__dirname, '..', 'js', 'vault.js'));
+  const secret = { profiles: [{ name: 'Imo' }], srs: [{ key: 'p1|w:kava', reps: 3 }], note: 'čćžšđ 🇭🇷' };
+  const env = await vault.encrypt(secret, 'correct horse');
+  t('envelope marked', vault.isEnvelope(env) && env.v === 1);
+  t('ciphertext is not plaintext', !JSON.stringify(env).includes('kava'));
+  const back = await vault.decrypt(env, 'correct horse');
+  t('decrypt roundtrip (incl. diacritics)', JSON.stringify(back) === JSON.stringify(secret));
+  let failed = false;
+  try { await vault.decrypt(env, 'wrong pass'); } catch (e) { failed = true; }
+  t('wrong passphrase rejected', failed);
+  const env2 = await vault.encrypt(secret, 'correct horse');
+  t('fresh salt+iv every encryption', env2.ct !== env.ct && env2.salt !== env.salt);
+  t('plain dumps are not envelopes', !vault.isEnvelope({ app: 'imonicroat', srs: [] }));
+});
+
 /* ================= PWA assets ================= */
 console.log('PWA assets');
 {
@@ -339,5 +357,10 @@ console.log('PWA assets');
     t('manifest icon exists: ' + i.src, fs.existsSync(path.join(root, i.src))));
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+vaultTests().then(() => {
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+}).catch(e => {
+  console.error('vault tests crashed: ' + (e && e.message));
+  process.exit(1);
+});

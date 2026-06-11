@@ -274,9 +274,13 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     const r = rng();
 
     if (isWord) {
-      if (maturityBucket === 'new' || maturityBucket === 'learning') {
+      if (maturityBucket === 'new') {
+        // first contact after the intro: pure recognition, never production
+        return exChoice(item, 'hr2en');
+      }
+      if (maturityBucket === 'learning') {
         if (hasAudio && r < 0.3) return exListen(item, false);
-        return exChoice(item, r < 0.6 ? 'hr2en' : 'en2hr');
+        return exChoice(item, r < 0.5 ? 'hr2en' : 'en2hr');
       }
       if (maturityBucket === 'young') {
         if (hasAudio && r < 0.35) return exListen(item, false);
@@ -288,7 +292,12 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     }
 
     // sentence cards
-    if (maturityBucket === 'new' || maturityBucket === 'learning') {
+    if (maturityBucket === 'new') {
+      // a brand-new sentence is taught on a teach screen first (app layer);
+      // its first exercise is recognising the meaning, nothing harder
+      return exSentence(item, 'hr2enChoice');
+    }
+    if (maturityBucket === 'learning') {
       return r < 0.5 ? exSentence(item, 'hr2enChoice') : exTiles(item);
     }
     if (maturityBucket === 'young') {

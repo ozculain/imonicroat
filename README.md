@@ -24,6 +24,34 @@ fallback) and everything works offline.
 | App | `js/app.js` | profiles, shared streak, weekly duel, lesson loop, flag → review workflow, family-variety layer, notes layer, test-out, settings |
 | Design | `css/app.css`, `js/icons.js` | "Adriatic field notes" — no external assets, all icons procedural SVG |
 
+## How a lesson actually flows
+
+Teach first, test second:
+
+1. **Unit opener** the first time you enter new territory — what the unit is
+   about and which grammar is coming.
+2. **New words** get a teach screen (audio, gender, pronunciation, usage note,
+   source) before any question; the first exercise is pure recognition.
+3. **New grammar** appears as a teaching screen the first time a sentence
+   needs it — the accusative is explained *before* "Pijem kavu" is asked.
+4. **New sentences** get a teach screen with audio and a word-by-word gloss
+   before the exercise.
+5. **Reviews** of older material are mixed in, graded by FSRS maturity —
+   recognition when young, typed production only once a card is mature.
+6. Each new word comes back a second time, one notch harder, before the
+   lesson ends with a recap of what you learned.
+
+## Privacy & security
+
+- A **household passphrase** (set during onboarding) locks the app on every
+  device and **end-to-end encrypts** everything that syncs (PBKDF2 →
+  AES-256-GCM). The gist/file holds ciphertext; the passphrase itself never
+  syncs or leaves a device.
+- Honest limits of a serverless static site: a stranger visiting the URL can
+  never see your data (it's locked locally and encrypted remotely), but
+  nothing can stop them using the page as their own blank copy — there's no
+  server to refuse anyone. The lock makes it private, not invitation-only.
+
 ## The pedagogy (and where it comes from)
 
 - **Case order** follows L2 sequencing (Croaticum / Easy Croatian), not the

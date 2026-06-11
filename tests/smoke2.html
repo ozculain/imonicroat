@@ -13,9 +13,11 @@
     document.getElementById('errors').textContent += 'REJ: ' + (e.reason && (e.reason.message + ' ' + (e.reason.stack||'').split('\n')[1]) || e.reason) + ' | ';
   });
 </script>
+<script>window.__CRO_TEST_NOCRYPTO = true;</script>
 <script src="../js/icons.js"></script>
 <script src="../js/srs.js"></script>
 <script src="../js/db.js"></script>
+<script src="../js/vault.js"></script>
 <script src="../js/sync.js"></script>
 <script src="../js/audio.js"></script>
 <script src="../js/content.js"></script>
@@ -32,6 +34,8 @@
       if (!q('#p1name')) return false;
       q('#p1name').value = 'Imo';
       q('#p2name').value = 'Nicro';
+      q('#passA').value = 'test1234';
+      q('#passB').value = 'test1234';
       q('#startBtn').click();
       note('onboarded');
       return true;
@@ -50,6 +54,8 @@
       (function tick() {
         if (clicks++ > 80) { note('LOOP-LIMIT'); return finish(); }
         if (CRO.app.state.view === 'summary' || !CRO.app.state.session) return finish();
+        var cont = q('#contBtn');
+        if (cont) { cont.click(); return setTimeout(tick, 30); }
         var intro = q('#introNext');
         if (intro) { intro.click(); return setTimeout(tick, 30); }
         var fbNext = q('.fb-next');
