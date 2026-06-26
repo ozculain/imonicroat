@@ -24,7 +24,9 @@
     overrides: [],
     settings: { retention: 0.9, newPerLesson: 4, showVariety: true, dailyGoalLessons: 1 },
     session: null,
-    view: 'home'
+    view: 'home',
+    deviceId: null,   // stable per-device id (activity keys, conflict tiebreak)
+    clock: 0          // local Lamport clock for skew-proof conflict resolution
   };
 
   const NEW_WORDS_PER_LESSON = () => state.settings.newPerLesson || 4;
@@ -84,14 +86,41 @@
   function activeProfile() { return state.profiles.find(p => p.id === state.activeId); }
   function otherProfile() { return state.profiles.find(p => p.id !== state.activeId); }
 
+  // A stable per-device id and a Lamport clock. The clock makes cross-device
+  // conflict resolution independent of (unsynchronized) wall clocks: every
+  // record-mutating write stamps a monotonically increasing {clk, dev}, and the
+  // merge prefers the higher clk (deviceId breaks ties deterministically).
+  async function ensureDeviceId() {
+    if (state.deviceId) return state.deviceId;
+    let id = await CRO.db.getMeta('deviceId');
+    if (!id) { id = 'd' + Math.random().toString(36).slice(2, 10); await CRO.db.setMeta('deviceId', id); }
+    state.deviceId = id;
+    return id;
+  }
+  async function bumpClock() {
+    const c = (await CRO.db.getMeta('syncClock') || 0) + 1;
+    await CRO.db.setMeta('syncClock', c);
+    state.clock = c;
+    return c;
+  }
+  /** {clk, dev} stamp for a record about to be written, for skew-proof merges. */
+  async function stamp() {
+    return { clk: await bumpClock(), dev: await ensureDeviceId() };
+  }
+
   async function saveCard(card) {
+    Object.assign(card, await stamp());
     await CRO.db.put('srs', Object.assign({ key: state.activeId + '|' + card.cardId, profileId: state.activeId }, card));
     state.srs[card.cardId] = card;
   }
 
   async function addXp(amount, lessonDone) {
-    const key = state.activeId + '|' + todayKey();
-    const rec = (await CRO.db.get('activity', key)) || { key, profileId: state.activeId, date: todayKey(), xp: 0, lessons: 0 };
+    // key per (profile, day, device): each device owns its own counter, so the
+    // merge can SUM independent same-day work instead of max-ing it away.
+    const deviceId = await ensureDeviceId();
+    const date = todayKey();
+    const key = state.activeId + '|' + date + '|' + deviceId;
+    const rec = (await CRO.db.get('activity', key)) || { key, profileId: state.activeId, date, deviceId, xp: 0, lessons: 0 };
     rec.xp += amount;
     if (lessonDone) rec.lessons += 1;
     await CRO.db.put('activity', rec);
@@ -540,11 +569,11 @@
       <textarea id="flagNote" rows="3" placeholder="e.g. nobody says this — we'd say … instead"></textarea>
       <button class="btn primary" id="flagSave">Save flag</button>`;
     m.body.querySelector('#flagSave').onclick = async () => {
-      const f = {
+      const f = Object.assign({
         id: 'f' + Date.now() + Math.random().toString(36).slice(2, 6),
         cardId, note: $('#flagNote').value.trim(), context: context || '',
-        profileId: state.activeId, createdAt: Date.now(), resolved: false
-      };
+        profileId: state.activeId, createdAt: Date.now(), updatedAt: Date.now(), resolved: false
+      }, await stamp());
       await CRO.db.put('flags', f);
       state.flags.push(f);
       CRO.sync.syncNow('flag');
@@ -609,18 +638,18 @@
         const pronEl = card.querySelector('.e-pron');
         if (pronEl) patch.pron = pronEl.value;
         const id = cardId.slice(2);
-        const override = { id, patch, editedAt: Date.now(), editedBy: state.activeId };
+        const override = Object.assign({ id, patch, editedAt: Date.now(), editedBy: state.activeId }, await stamp());
         await CRO.db.put('overrides', override);
         state.overrides = state.overrides.filter(o => o.id !== id).concat([override]);
         CRO.content.applyOverrides([override]);
         if (card.querySelector('.e-reset').checked) await resetCardAllProfiles(cardId);
-        for (const f of flags) { f.resolved = true; f.updatedAt = Date.now(); await CRO.db.put('flags', f); }
+        for (const f of flags) { Object.assign(f, { resolved: true, updatedAt: Date.now() }, await stamp()); await CRO.db.put('flags', f); }
         CRO.sync.syncNow('correction');
         toast('Correction applied.');
         render('review');
       };
       card.querySelector('.e-dismiss').onclick = async () => {
-        for (const f of flags) { f.resolved = true; f.updatedAt = Date.now(); await CRO.db.put('flags', f); }
+        for (const f of flags) { Object.assign(f, { resolved: true, updatedAt: Date.now() }, await stamp()); await CRO.db.put('flags', f); }
         CRO.sync.syncNow('dismiss');
         render('review');
       };
@@ -635,7 +664,7 @@
     const all = await CRO.db.getAll('srs');
     for (const rec of all) {
       if (rec.cardId === cardId) {
-        const fresh = CRO.srs.newCard(cardId);
+        const fresh = Object.assign(CRO.srs.newCard(cardId), await stamp());
         await CRO.db.put('srs', Object.assign({ key: rec.key, profileId: rec.profileId }, fresh));
         if (rec.profileId === state.activeId) state.srs[cardId] = Object.assign({}, fresh);
       }
@@ -667,11 +696,11 @@
     form.querySelector('#v-add').onclick = async () => {
       const hr = $('#v-hr').value.trim();
       if (!hr) return;
-      const v = {
+      const v = Object.assign({
         id: 'v' + Date.now(), baseId: $('#v-base').value || null,
         hr, en: $('#v-en').value.trim(), region: $('#v-region').value.trim(),
         note: $('#v-note').value.trim(), createdAt: Date.now(), updatedAt: Date.now()
-      };
+      }, await stamp());
       await CRO.db.put('variety', v);
       state.variety.push(v);
       CRO.sync.syncNow('variety');
@@ -689,7 +718,7 @@
         <button class="iconbtn v-del" title="Delete">${ic('cross', 16)}</button>`;
       row.querySelector('.v-del').onclick = async () => {
         // tombstone, not delete — so the removal also syncs to the other device
-        v.deleted = true; v.updatedAt = Date.now();
+        Object.assign(v, { deleted: true, updatedAt: Date.now() }, await stamp());
         await CRO.db.put('variety', v);
         state.variety = state.variety.filter(x => x.id !== v.id);
         CRO.sync.syncNow('variety');

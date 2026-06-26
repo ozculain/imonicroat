@@ -40,6 +40,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   function norm(s) {
     return (s || '')
       .toLowerCase()
+      .replace(/\([^)]*\)/g, '')   // drop parenthetical glosses, e.g. "(man speaking)"
       .replace(/[.,!?;:'"„"…‘’´`-]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -120,11 +121,15 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     const all = CRO.content.WORDS;
     const sameUnit = all.filter(w => w.unit === word.unit && w.id !== word.id);
     const others = all.filter(w => w.unit !== word.unit && w.id !== word.id);
-    const pool = sameUnitFirst ? sameUnit.concat(shuffle(others)) : shuffle(all.filter(w => w.id !== word.id));
+    // shuffle within each group, keeping same-unit distractors first (harder
+    // near-misses); iterate the pre-ordered pool directly so the order survives
+    const pool = sameUnitFirst
+      ? shuffle(sameUnit).concat(shuffle(others))
+      : shuffle(all.filter(w => w.id !== word.id));
     // avoid distractors with an identical translation
     const seen = new Set([norm(word.en)]);
     const out = [];
-    for (const w of shuffle(pool)) {
+    for (const w of pool) {
       if (out.length >= n) break;
       if (seen.has(norm(w.en))) continue;
       seen.add(norm(w.en));
@@ -210,7 +215,10 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     const pool = CRO.content.SENTENCES
       .filter(s => s.id !== sent.id)
       .flatMap(s => s.hr.replace(/[.,!?]/g, '').split(/\s+/));
-    const distinct = [...new Set(pool.filter(t => !tokens.includes(t)))];
+    // exclude distractors that normalize to a needed token (the check is
+    // case-/diacritic-insensitive, so a case-variant tile would be accepted)
+    const needNorm = new Set(tokens.map(norm));
+    const distinct = [...new Set(pool.filter(t => !needNorm.has(norm(t))))];
     const distractors = pick(distinct, Math.min(3, distinct.length));
     return {
       type: 'tiles', cardId: 's:' + sent.id, sent,
@@ -228,12 +236,13 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
 
   /** Gap fill: sentence with one word blanked; choose from 4. */
   function exGap(sent) {
-    const tokens = sent.hr.replace(/[.!?]/g, '').split(/\s+/);
-    // blank a content word — prefer the longest token (most informative)
+    // strip commas too, so the gapped option isn't the only one with a trailing comma
+    const tokens = sent.hr.replace(/[.,!?]/g, '').split(/\s+/);
+    // blank a content word, chosen at random (not always the longest, which is
+    // predictable) and blank every occurrence so a repeat doesn't leak it
     const candidates = tokens.filter(t => t.length > 2);
-    const target = candidates.sort((a, b) => b.length - a.length)[0] || tokens[0];
-    const gapIdx = tokens.indexOf(target);
-    const display = tokens.map((t, i) => i === gapIdx ? '____' : t).join(' ');
+    const target = candidates.length ? candidates[Math.floor(rng() * candidates.length)] : tokens[0];
+    const display = tokens.map(t => norm(t) === norm(target) ? '____' : t).join(' ');
     // distractors: other forms / words of similar length from the unit
     const pool = [...new Set(CRO.content.SENTENCES
       .filter(s => s.unit === sent.unit && s.id !== sent.id)

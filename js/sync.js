@@ -6,15 +6,25 @@
    on boot, after every lesson, and after edits. No server, works offline
    (sync simply resumes next time the file is reachable).
 
-   Merge rules (two writers, eventually consistent):
+   Merge rules (two writers, eventually consistent). Conflicts are resolved by a
+   per-record Lamport clock {clk, dev} stamped on every write, so the outcome is
+   independent of (unsynchronized) device wall-clocks; higher clk wins, deviceId
+   breaks ties. Records predating the clock fall back to their timestamp rule:
      profiles  → union by id (local wins on conflict)
-     srs       → newest lastReview wins (ties: more reps)
-     activity  → per profile-day: max(xp), max(lessons)  — max, not sum,
-                 so repeated merges never double-count
-     flags     → union; "resolved" is sticky
-     overrides → latest editedAt wins
-     variety   → latest updatedAt wins; deletions are tombstones
+     srs       → higher clk wins (fallback: newest lastReview, then more reps)
+     activity  → keyed per (profile|date|device); each device owns its counter,
+                 so app-side streak/week totals SUM across devices. The max-merge
+                 only ever resolves the SAME device re-syncing its own counter.
+     flags     → higher clk wins (fallback: updatedAt); "resolved" is sticky
+     overrides → higher clk wins (fallback: editedAt)
+     variety   → higher clk wins (fallback: updatedAt); deletions are tombstones,
+                 GC'd 60 days after deletion
      meta      → never synced (device-local: active profile, settings, handle)
+
+   Known limit: read-merge-write is not atomic across devices, so a write that
+   races another device's write can be lost. It is self-healing (each device
+   re-merges on its next sync) and the corrupt-remote / clock-skew failure modes
+   are handled above, so the residual window is a brief, recoverable one.
    ========================================================================= */
 if (typeof window === 'undefined') { global.window = global; } // node test shim
 (function () {
@@ -37,6 +47,16 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   }
 
   /* ---------------- pure merge (node-testable) ---------------- */
+  // Distinguish "no remote yet" (fresh → seed it) from "remote is corrupt".
+  // Returning null on a parse failure used to make syncNow overwrite a
+  // possibly-good remote with local-only data; instead we throw so the write
+  // is skipped and we retry next sync (mirrors the wrong-passphrase path).
+  function parseRemote(text) {
+    if (!text || !text.trim()) return null; // genuinely empty / missing → fresh
+    try { return JSON.parse(text); }
+    catch (e) { throw new Error('corrupt-remote: sync payload is not valid JSON'); }
+  }
+
   function unionBy(a, b, key, resolve) {
     const map = new Map();
     (a || []).forEach(x => map.set(x[key], x));
@@ -47,6 +67,16 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return [...map.values()];
   }
 
+  // Conflict winner by logical clock (skew-proof): higher clk wins, deviceId
+  // breaks ties deterministically. Returns null when neither record carries a
+  // clock, so callers fall back to their wall-clock/semantic rule for legacy data.
+  function pickByClock(x, y) {
+    if (x.clk == null && y.clk == null) return null;
+    const cx = x.clk || 0, cy = y.clk || 0;
+    if (cx !== cy) return cy > cx ? y : x;
+    return String(y.dev || '') > String(x.dev || '') ? y : x;
+  }
+
   function mergeDumps(local, remote) {
     const newer = (x, y, field) => ((y[field] || 0) > (x[field] || 0) ? y : x);
     return {
@@ -55,22 +85,40 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
       exportedAt: new Date().toISOString(),
       profiles: unionBy(local.profiles, remote.profiles, 'id', (x) => x),
       srs: unionBy(local.srs, remote.srs, 'key', (x, y) => {
+        const p = pickByClock(x, y);
+        if (p) return p;
         if ((y.lastReview || 0) !== (x.lastReview || 0)) return (y.lastReview || 0) > (x.lastReview || 0) ? y : x;
         return (y.reps || 0) > (x.reps || 0) ? y : x;
       }),
+      // per-device keys (profile|date|device) never collide across devices, so
+      // this union keeps each device's counter; max only ever resolves the SAME
+      // device re-syncing its own monotonically-growing counter. App-side
+      // streak/week totals SUM these records.
       activity: unionBy(local.activity, remote.activity, 'key', (x, y) =>
         Object.assign({}, x, { xp: Math.max(x.xp || 0, y.xp || 0), lessons: Math.max(x.lessons || 0, y.lessons || 0) })),
       flags: unionBy(local.flags, remote.flags, 'id', (x, y) => {
-        const w = newer(x, y, 'updatedAt');
+        const w = pickByClock(x, y) || newer(x, y, 'updatedAt');
         return (x.resolved || y.resolved) ? Object.assign({}, w, { resolved: true }) : w;
       }),
-      overrides: unionBy(local.overrides, remote.overrides, 'id', (x, y) => newer(x, y, 'editedAt')),
+      overrides: unionBy(local.overrides, remote.overrides, 'id', (x, y) => pickByClock(x, y) || newer(x, y, 'editedAt')),
       variety: unionBy(local.variety, remote.variety, 'id', (x, y) => {
+        const p = pickByClock(x, y);
+        if (p) return p;
         const ts = v => v.updatedAt || v.createdAt || 0;
         return ts(y) > ts(x) ? y : x;
       }),
       meta: [] // device-local, never synced
     };
+  }
+
+  // Highest logical clock seen in a dump — used to advance this device's clock
+  // past anything observed remotely, so future local writes causally dominate.
+  function maxClock(dump) {
+    let m = 0;
+    ['srs', 'overrides', 'variety', 'flags'].forEach(s => (dump[s] || []).forEach(r => {
+      if (r.clk > m) m = r.clk;
+    }));
+    return m;
   }
 
   /* ---------------- file plumbing ---------------- */
@@ -98,9 +146,12 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     const f = data.files && data.files[GIST_FILE];
     if (!f) return null;
     let text = f.content;
-    if (f.truncated && f.raw_url) text = await (await fetch(f.raw_url)).text();
-    if (!text || !text.trim()) return null;
-    try { return JSON.parse(text); } catch (e) { return null; }
+    if (f.truncated && f.raw_url) {
+      const rr = await fetch(f.raw_url);
+      if (!rr.ok) throw new Error('corrupt-remote: could not fetch full gist content (' + rr.status + ')');
+      text = await rr.text();
+    }
+    return parseRemote(text);
   }
 
   async function gistWrite(merged) {
@@ -146,11 +197,11 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     let payload = null;
     if (status.transport === 'gist') payload = await gistRead();
     else {
-      try {
-        const file = await handle.getFile();
-        const text = await file.text();
-        payload = text.trim() ? JSON.parse(text) : null;
-      } catch (e) { payload = null; /* unreadable/empty → treat as fresh */ }
+      // An unreadable handle (permission/transient) must NOT be treated as
+      // "fresh" — that would overwrite the shared file with local-only data.
+      // Let read errors throw so syncNow skips the write and retries later.
+      const file = await handle.getFile();
+      payload = parseRemote(await file.text());
     }
     return maybeDecrypt(payload);
   }
@@ -175,6 +226,14 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
       const remote = await readRemote();
       const local = await localDump();
       const merged = (remote && remote.app === 'imonicroat') ? mergeDumps(local, remote) : local;
+      // GC old variety tombstones (both devices have long since converged) so the
+      // store can't grow unbounded with deletions
+      const tombCutoff = Date.now() - 60 * 864e5;
+      if (merged.variety) merged.variety = merged.variety.filter(v => !(v.deleted && (v.updatedAt || 0) < tombCutoff));
+      // advance our Lamport clock past anything observed, so later local writes win
+      const seen = maxClock(merged);
+      const cur = (await CRO.db.getMeta('syncClock')) || 0;
+      if (seen > cur) await CRO.db.setMeta('syncClock', seen);
       await CRO.db.importAll(merged);
       await writeRemote(merged);
       status.connected = true;
@@ -286,6 +345,6 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   }
 
   window.CRO = window.CRO || {};
-  CRO.sync = { init, setup, setupGist, gistInfo, reconnect, disconnect, syncNow, status, mergeDumps, _unionBy: unionBy };
+  CRO.sync = { init, setup, setupGist, gistInfo, reconnect, disconnect, syncNow, status, mergeDumps, _unionBy: unionBy, _parseRemote: parseRemote, _maxClock: maxClock };
   if (typeof module !== 'undefined' && module.exports) module.exports = CRO.sync;
 })();

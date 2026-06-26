@@ -48,8 +48,8 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
 
   function nextDifficulty(d, rating) {
     const updated = d - W[6] * (rating - 3);
-    // mean reversion toward the difficulty of a "Good" first rating
-    return clamp(W[7] * initDifficulty(Rating.Good) + (1 - W[7]) * updated, 1, 10);
+    // mean reversion toward D0(Easy), the canonical FSRS-4.5 anchor (≈3.93)
+    return clamp(W[7] * initDifficulty(Rating.Easy) + (1 - W[7]) * updated, 1, 10);
   }
 
   function stabilityAfterRecall(d, s, r, rating) {
@@ -97,6 +97,10 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
    */
   function review(card, rating, now, requestRetention) {
     requestRetention = requestRetention || 0.9;
+    // guard against an out-of-range / NaN rating corrupting the card forever
+    // (initStability indexes W[rating-1]); fall back to Good.
+    rating = Math.round(rating);
+    if (!(rating >= 1 && rating <= 4)) rating = Rating.Good;
     const elapsedDays = card.lastReview ? Math.max(0, (now - card.lastReview) / DAY_MS) : 0;
 
     if (card.state === 'new') {
@@ -154,7 +158,9 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
    */
   function seedKnown(card, now, stabilityDays) {
     card.state = 'review';
-    card.stability = stabilityDays;
+    // a zero/negative stability makes the first real review NaN (pow(0,-w)) —
+    // clamp to a sane floor
+    card.stability = Math.max(stabilityDays, 0.1);
     card.difficulty = initDifficulty(Rating.Easy);
     card.lastReview = now;
     card.reps = 1;
@@ -166,6 +172,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
 
   /** Deterministic per-card jitter so seeding is reproducible. */
   function pseudoRandom(str) {
+    str = String(str); // a numeric cardId would have no .length → constant jitter
     let h = 2166136261;
     for (let i = 0; i < str.length; i++) {
       h ^= str.charCodeAt(i);

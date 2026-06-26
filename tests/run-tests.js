@@ -255,6 +255,74 @@ console.log('Exercise engine');
   t('alt translations accepted', eT.check('I drink coffee').ok);
 }
 
+/* ================= bugfix regressions ================= */
+console.log('Bugfix regressions');
+{
+  // A1 — parenthetical glosses in the English answer must not cause false negatives
+  t('A1: checkTyped ignores a parenthetical gloss',
+    ex.checkTyped('I was in Split.', ['I was in Split. (man speaking)']).ok);
+  const s801 = content.sentById['s801'];
+  if (s801) {
+    t('A1: glossed sentence accepts the natural typed answer',
+      ex.exSentence(s801, 'hr2enType').check(s801.en.replace(/\s*\([^)]*\)\s*/g, '').trim()).ok,
+      s801.en);
+  }
+
+  // A2 — gap-fill options must be punctuation-uniform (no lone-comma giveaway)
+  ex.reseed(5);
+  let gapClean = true, gapWhy = '';
+  for (const s of content.SENTENCES) {
+    const e = ex.exGap(s);
+    if (/,/.test(e.target)) { gapClean = false; gapWhy = 'target "' + e.target + '" in ' + s.id; }
+    if (e.options.some(o => /,/.test(o))) { gapClean = false; gapWhy = 'comma option in ' + s.id; }
+  }
+  t('A2: gap-fill has no comma giveaway', gapClean, gapWhy);
+
+  // B1 — difficulty mean-reverts toward D0(Easy) (≈3.93), not D0(Good)
+  let d = srs._internals.initDifficulty(srs.Rating.Good);
+  for (let i = 0; i < 2000; i++) d = srs._internals.nextDifficulty(d, srs.Rating.Good);
+  const easyD = srs._internals.initDifficulty(srs.Rating.Easy);
+  t('B1: steady-Good difficulty converges to D0(Easy)', Math.abs(d - easyD) < 1e-6, `${d} vs ${easyD}`);
+
+  // C1 — corrupt remote throws (write is skipped); empty/missing stays "fresh"
+  t('C1: empty remote → null (fresh)', sync._parseRemote('') === null && sync._parseRemote('  ') === null);
+  t('C1: valid remote parses', sync._parseRemote('{"app":"imonicroat"}').app === 'imonicroat');
+  let parseThrew = false;
+  try { sync._parseRemote('{ not valid json'); } catch (e) { parseThrew = true; }
+  t('C1: corrupt remote throws instead of clobbering', parseThrew);
+
+  // A3 — tile distractors must not normalize to a needed token (case-variant hole)
+  ex.reseed(13);
+  let tileClean = true, tileWhy = '';
+  for (const s of content.SENTENCES) {
+    const e = ex.exTiles(s);
+    const need = new Set(e.tokens.map(ex.norm));
+    const matching = e.tiles.filter(tl => need.has(ex.norm(tl))).length;
+    if (matching !== e.tokens.length) { tileClean = false; tileWhy = s.id + ': ' + matching + '≠' + e.tokens.length; }
+  }
+  t('A3: tile bank has no case-variant distractors', tileClean, tileWhy);
+
+  // A4 — the blanked answer must never remain visible in the gap display
+  ex.reseed(5);
+  let gapNoLeak = true, leakWhy = '';
+  for (const s of content.SENTENCES) {
+    const e = ex.exGap(s);
+    const visible = e.display.split(/\s+/).map(ex.norm);
+    if (visible.includes(ex.norm(e.target))) { gapNoLeak = false; leakWhy = s.id; }
+  }
+  t('A4: gap-fill never leaves the answer visible', gapNoLeak, leakWhy);
+
+  // B2 — out-of-range / NaN ratings and zero-stability seeds stay finite
+  const c0 = srs.review(srs.newCard('g0'), 0, Date.now());
+  const c5 = srs.review(srs.newCard('g5'), 5, Date.now());
+  const cN = srs.review(srs.newCard('gN'), NaN, Date.now());
+  t('B2: out-of-range/NaN rating never produces NaN',
+    [c0, c5, cN].every(c => isFinite(c.stability) && isFinite(c.difficulty) && isFinite(c.due)));
+  const cz = srs.seedKnown(srs.newCard('z'), Date.now(), 0);
+  srs.review(cz, srs.Rating.Good, cz.due);
+  t('B2: seedKnown(...,0) survives first review without NaN', isFinite(cz.stability) && isFinite(cz.due));
+}
+
 /* ================= sync merge ================= */
 console.log('Sync merge');
 {
@@ -299,7 +367,7 @@ console.log('Sync merge');
   t('srs: local-only record kept', !!M.srs.find(r => r.key === 'p1|w:caj'));
   t('srs: partner records arrive', !!M.srs.find(r => r.key === 'p2|w:kava'));
   const act = M.activity.find(a => a.key === 'p1|2026-06-10');
-  t('activity: max not sum', act.xp === 40 && act.lessons === 2);
+  t('activity: same key (same device) resolves by max', act.xp === 40 && act.lessons === 2);
   t('activity: partner day arrives (streak works)', !!M.activity.find(a => a.key === 'p2|2026-06-10'));
   t('flags: resolved is sticky', M.flags.find(f => f.id === 'f1').resolved === true);
   t('overrides: latest editedAt wins', M.overrides.find(o => o.id === 'kava').patch.en === 'new');
@@ -314,6 +382,38 @@ console.log('Sync merge');
   t('merge idempotent (variety)', JSON.stringify(M2.variety) === JSON.stringify(M.variety));
 }
 
+/* ================= sync conflict resolution (C2/C3) ================= */
+console.log('Sync conflict resolution');
+{
+  // C3 — concurrent same-day work on different devices SUMS (per-device keys)
+  const dA = { app: 'imonicroat', activity: [{ key: 'p1|2026-06-26|dA', profileId: 'p1', date: '2026-06-26', deviceId: 'dA', xp: 50, lessons: 1 }] };
+  const dB = { app: 'imonicroat', activity: [{ key: 'p1|2026-06-26|dB', profileId: 'p1', date: '2026-06-26', deviceId: 'dB', xp: 30, lessons: 1 }] };
+  const m = sync.mergeDumps(dA, dB);
+  const total = m.activity.filter(a => a.date === '2026-06-26').reduce((s, a) => s + a.xp, 0);
+  t('C3: concurrent same-day device XP sums to 80', m.activity.length === 2 && total === 80, String(total));
+  const total2 = sync.mergeDumps(m, dB).activity.reduce((s, a) => s + a.xp, 0);
+  t('C3: re-merge stays 80 (idempotent, no double-count)', total2 === 80, String(total2));
+
+  // C2 — the logical clock beats wall-clock skew on conflicting edits
+  const skewOld = { app: 'imonicroat', overrides: [{ id: 'kava', patch: { en: 'A' }, editedAt: 9e12, clk: 2, dev: 'dA' }] };
+  const skewNew = { app: 'imonicroat', overrides: [{ id: 'kava', patch: { en: 'B' }, editedAt: 1, clk: 5, dev: 'dB' }] };
+  t('C2: higher logical clock wins despite a far-future wall-clock',
+    sync.mergeDumps(skewOld, skewNew).overrides.find(o => o.id === 'kava').patch.en === 'B');
+
+  // C2 — a clk tie resolves deterministically by deviceId (order-independent)
+  const tieA = { app: 'imonicroat', variety: [{ id: 'v1', hr: 'A', clk: 7, dev: 'dA', updatedAt: 1 }] };
+  const tieB = { app: 'imonicroat', variety: [{ id: 'v1', hr: 'B', clk: 7, dev: 'dB', updatedAt: 1 }] };
+  t('C2: clk tie broken deterministically (merge order-independent)',
+    sync.mergeDumps(tieA, tieB).variety[0].hr === sync.mergeDumps(tieB, tieA).variety[0].hr);
+
+  // C2 — legacy records without clk still resolve by timestamp (back-compat)
+  const legA = { app: 'imonicroat', overrides: [{ id: 'x', patch: { en: 'old' }, editedAt: 10 }] };
+  const legB = { app: 'imonicroat', overrides: [{ id: 'x', patch: { en: 'new' }, editedAt: 20 }] };
+  t('C2: clk-less records fall back to timestamp', sync.mergeDumps(legA, legB).overrides[0].patch.en === 'new');
+
+  t('C2: maxClock scans all record stores', sync._maxClock({ srs: [{ clk: 3 }], variety: [{ clk: 9 }], flags: [{ clk: 4 }] }) === 9);
+}
+
 /* ================= vault (E2E crypto) ================= */
 console.log('Vault crypto');
 const vaultTests = (async () => {
@@ -322,6 +422,7 @@ const vaultTests = (async () => {
   const env = await vault.encrypt(secret, 'correct horse');
   t('envelope marked', vault.isEnvelope(env) && env.v === 1);
   t('ciphertext is not plaintext', !JSON.stringify(env).includes('kava'));
+  t('E1: envelope carries iteration count (≥600k)', env.it >= 600000);
   const back = await vault.decrypt(env, 'correct horse');
   t('decrypt roundtrip (incl. diacritics)', JSON.stringify(back) === JSON.stringify(secret));
   let failed = false;
@@ -357,10 +458,41 @@ console.log('PWA assets');
     t('manifest icon exists: ' + i.src, fs.existsSync(path.join(root, i.src))));
 }
 
-vaultTests().then(() => {
+/* ================= db import / replace ================= */
+const dbTests = (async () => {
+  console.log('DB import/replace');
+  // db.js has no indexedDB in node → it uses its localStorage fallback; shim it
+  const store = {};
+  global.localStorage = {
+    getItem: k => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v); },
+    removeItem: k => { delete store[k]; }
+  };
+  require(path.join(__dirname, '..', 'js', 'db.js'));
+  const db = global.CRO.db;
+  await db.put('flags', { id: 'f1', note: 'old' });
+  await db.put('flags', { id: 'f2', note: 'stale' });
+  await db.setMeta('passphrase', 'secret');
+  await db.importAll({ app: 'imonicroat', flags: [{ id: 'f1', note: 'new' }], meta: [] });
+  const flags = await db.getAll('flags');
+  t('D2: import replaces store (orphan f2 removed)',
+    flags.length === 1 && flags[0].id === 'f1' && flags[0].note === 'new',
+    JSON.stringify(flags));
+  t('D2: device-local meta survives an import with meta:[]',
+    (await db.getMeta('passphrase')) === 'secret');
+
+  // D4: exported backups must not carry passphrase or lock
+  await db.setMeta('lock', { salt: 'x', hash: 'y' });
+  const dump = await db.exportAll();
+  const metaKeys = dump.meta.map(m => m.key);
+  t('D4: export omits passphrase and lock', !metaKeys.includes('passphrase') && !metaKeys.includes('lock'),
+    metaKeys.join(','));
+});
+
+vaultTests().then(dbTests).then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }).catch(e => {
-  console.error('vault tests crashed: ' + (e && e.message));
+  console.error('async tests crashed: ' + (e && e.message));
   process.exit(1);
 });

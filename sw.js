@@ -3,7 +3,7 @@
    from cache, silent refresh in the background, new version on next open. */
 'use strict';
 
-const VERSION = 'imonicroat-v2';
+const VERSION = 'imonicroat-06bc0d766d';
 const FILES = [
   './',
   'index.html',
@@ -42,9 +42,20 @@ self.addEventListener('fetch', e => {
     caches.open(VERSION).then(cache =>
       cache.match(e.request).then(cached => {
         const fresh = fetch(e.request)
-          .then(resp => { if (resp.ok) cache.put(e.request, resp.clone()); return resp; })
-          .catch(() => cached);
-        return cached || fresh;
+          .then(resp => {
+            // only cache successful, non-query static GETs, so the cache can't
+            // grow unbounded with dynamic / query-string URLs
+            if (resp.ok && !url.search) cache.put(e.request, resp.clone());
+            return resp;
+          })
+          .catch(() => null);
+        if (cached) { fresh; return cached; } // serve cache now, revalidate in background
+        return fresh.then(resp => {
+          if (resp) return resp;
+          // offline & uncached: serve the app shell for navigations
+          if (e.request.mode === 'navigate') return cache.match('index.html').then(s => s || cache.match('./'));
+          return Response.error();
+        });
       })
     )
   );

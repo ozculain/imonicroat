@@ -43,14 +43,20 @@ Teach first, test second:
 
 ## Privacy & security
 
-- A **household passphrase** (set during onboarding) locks the app on every
-  device and **end-to-end encrypts** everything that syncs (PBKDF2 →
-  AES-256-GCM). The gist/file holds ciphertext; the passphrase itself never
-  syncs or leaves a device.
+- A **household passphrase** (set during onboarding) **end-to-end encrypts**
+  everything that syncs (PBKDF2 600k → AES-256-GCM). The gist/file holds only
+  ciphertext, so a stranger who finds the URL can never read your data; the
+  passphrase itself never syncs or leaves a device.
+- The on-device **lock screen is a soft gate, not a vault**: local data lives in
+  IndexedDB as plaintext and the stored unlock token is the passphrase hash
+  itself, so anyone with access to the unlocked device can get in. The real
+  protection for data sitting on a device is your OS login + disk encryption.
+  The passphrase and GitHub token are kept locally (so background sync can run
+  without re-prompting) — exported **backup files deliberately omit both**.
 - Honest limits of a serverless static site: a stranger visiting the URL can
-  never see your data (it's locked locally and encrypted remotely), but
-  nothing can stop them using the page as their own blank copy — there's no
-  server to refuse anyone. The lock makes it private, not invitation-only.
+  never see your data (it's encrypted remotely), but nothing can stop them using
+  the page as their own blank copy — there's no server to refuse anyone. The
+  lock makes it private, not invitation-only.
 
 ## The pedagogy (and where it comes from)
 
@@ -118,9 +124,12 @@ The app runs everywhere and merges all progress through one shared store, so
 the **shared streak**, weekly duel, corrections and variety layer follow both
 of you across all four devices. Sync happens on open, after every lesson, and
 after edits; everything still works fully offline — sync resumes when there's
-network. Merge rules are conflict-free for two writers: newest review wins per
-SRS card, daily XP takes the max (never double-counts), "resolved" flags stay
-resolved, variety deletions propagate as tombstones.
+network. Merge rules are conflict-free for two writers and use a per-record
+logical clock so conflicts resolve correctly even if the devices' wall-clocks
+disagree: newest write wins per SRS card, daily XP is tracked per device and
+summed (so same-day work on two devices adds up instead of one overwriting the
+other), "resolved" flags stay resolved, variety deletions propagate as
+tombstones.
 
 ### Step 1 — host it once (needed for the phones)
 
@@ -160,7 +169,9 @@ System Access API. Manual fallback: Settings → **Export / Import backup**.
 ## Tests
 
 ```
-node tests/run-tests.js     # 88 checks: FSRS, content integrity, exercises, sync merge, PWA assets
+node tests/run-tests.js     # FSRS, content integrity, exercises, sync merge & conflict
+                            # resolution, vault crypto, DB import/replace, PWA assets
+node scripts/stamp-sw.js    # stamp sw.js VERSION from a content hash (release step)
 tests/smoke.html            # browser boot smoke test
 tests/smoke2.html           # end-to-end lesson drive
 ```
