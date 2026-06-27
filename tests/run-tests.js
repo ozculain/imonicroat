@@ -506,6 +506,67 @@ console.log('PWA assets');
     t('manifest icon exists: ' + i.src, fs.existsSync(path.join(root, i.src))));
 }
 
+/* ================= service worker runtime (mocked scope) ================= */
+const swTests = (async () => {
+  console.log('Service worker');
+  const fs2 = require('fs');
+  const swSrc = fs2.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
+  const VERSION = swSrc.match(/const VERSION = '([^']+)'/)[1];
+  const FILES = swSrc.match(/const FILES = \[([\s\S]*?)\]/)[1].match(/'([^']+)'/g).map(s => s.slice(1, -1));
+  const ORIGIN = 'http://localhost';
+
+  class FakeResponse {
+    constructor(body, init) { this.body = body; this.ok = !(init && init.ok === false); }
+    clone() { return this; }
+    static error() { return new FakeResponse(null, { ok: false }); }
+  }
+  let online = true;
+  const network = { '/': 1, '/index.html': 1, '/js/app.js': 1 };
+  const fetchMock = async req => {
+    if (!online) throw new TypeError('Failed to fetch');
+    const u = new URL(typeof req === 'string' ? req : req.url, ORIGIN);
+    return new FakeResponse('net:' + u.pathname, { ok: network[u.pathname] !== false });
+  };
+  const cacheStore = new Map();
+  const keyOf = req => new URL(typeof req === 'string' ? req : req.url, ORIGIN).toString();
+  const openCache = name => {
+    if (!cacheStore.has(name)) cacheStore.set(name, new Map());
+    const m = cacheStore.get(name);
+    return {
+      async addAll(list) { for (const u of list) m.set(keyOf(u), new FakeResponse('precache:' + u, { ok: true })); },
+      async match(req) { return m.get(keyOf(req)); },
+      async put(req, resp) { m.set(keyOf(req), resp); }
+    };
+  };
+  const caches = { async open(n) { return openCache(n); }, async keys() { return [...cacheStore.keys()]; }, async delete(n) { return cacheStore.delete(n); } };
+  const handlers = {};
+  const self = { location: { origin: ORIGIN }, addEventListener: (type, h) => { handlers[type] = h; }, skipWaiting() {}, clients: { claim() {} } };
+  new Function('self', 'caches', 'fetch', 'Response', 'URL', swSrc)(self, caches, fetchMock, FakeResponse, URL);
+
+  const fetchEvent = (url, opt = {}) => {
+    let captured;
+    handlers.fetch({ request: { url: new URL(url, ORIGIN).toString(), method: opt.method || 'GET', mode: opt.mode || 'navigate' }, respondWith: p => { captured = p; } });
+    return captured;
+  };
+
+  await new Promise(res => handlers.install({ waitUntil: res }));
+  const cache = cacheStore.get(VERSION);
+  t('sw: install precaches every FILES entry into the VERSION cache', !!cache && FILES.every(f => cache.has(keyOf(f))));
+  cacheStore.set('imonicroat-OLD', new Map());
+  await new Promise(res => handlers.activate({ waitUntil: res }));
+  t('sw: activate prunes stale version caches', !cacheStore.has('imonicroat-OLD'));
+  online = true;
+  await fetchEvent('/new-asset.js', { mode: 'no-cors' });
+  t('sw: successful non-query GET is cached', cacheStore.get(VERSION).has(keyOf('/new-asset.js')));
+  await fetchEvent('/data?x=1', { mode: 'no-cors' });
+  t('sw: query-string GET is NOT cached (growth guard)', !cacheStore.get(VERSION).has(keyOf('/data?x=1')));
+  online = false;
+  const nav = await fetchEvent('/deep/route', { mode: 'navigate' });
+  t('sw: offline uncached navigation falls back to the app shell', !!nav && /index\.html|precache/.test(nav.body), nav && nav.body);
+  t('sw: non-GET passes through (no respondWith)', fetchEvent('/js/app.js', { method: 'POST' }) === undefined);
+  t('sw: cross-origin passes through', fetchEvent('https://api.github.com/gists/x') === undefined);
+});
+
 /* ================= db import (merge vs replace) + export hygiene ================= */
 const dbTests = (async () => {
   console.log('DB import/replace');
@@ -641,7 +702,7 @@ const syncC4Tests = (async () => {
     committed.activity.find(a => a.key === 'p1|d|dL').xp === 80);
 });
 
-vaultTests().then(dbTests).then(clockTests).then(syncC4Tests).then(() => {
+vaultTests().then(dbTests).then(clockTests).then(swTests).then(syncC4Tests).then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }).catch(e => {
