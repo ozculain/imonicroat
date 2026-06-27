@@ -1,13 +1,15 @@
 /* =========================================================================
    Persistence layer: IndexedDB with a localStorage fallback.
+   Synced record stores also carry a Lamport stamp {clk, dev} for conflict
+   resolution (see js/clock.js, js/sync.js).
    Stores:
      profiles  — {id, name, hue, createdAt, settings}
-     srs       — {key: profileId + '|' + cardId, profileId, cardId, ...card}
-     activity  — {key: profileId + '|' + date, profileId, date, xp, lessons}
-     flags     — {id, cardId, profileId, note, context, createdAt, resolved}
-     overrides — {id: cardId, patch: {...}, editedAt, editedBy}
-     variety   — {id, baseId|null, hr, en, note, region, createdAt}
-     meta      — {key, value}   (streak cache, active profile, etc.)
+     srs       — {key: profileId + '|' + cardId, profileId, cardId, ...card, clk, dev}
+     activity  — {key: profileId + '|' + date + '|' + deviceId, profileId, date, deviceId, xp, lessons}
+     flags     — {id, cardId, profileId, note, context, createdAt, resolved, clk, dev}
+     overrides — {id: cardId, patch: {...}, editedAt, editedBy, clk, dev}
+     variety   — {id, baseId|null, hr, en, note, region, createdAt, updatedAt, deleted?, clk, dev}
+     meta      — {key, value}   (active profile, deviceId, syncClock, gist token, …)
    ========================================================================= */
 (function () {
   'use strict';
@@ -60,11 +62,15 @@
     return opening;
   }
 
-  function idbKeys(db, store) {
+  function idbGetAllMap(db, store) {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(store, 'readonly');
-      const req = tx.objectStore(store).getAllKeys();
-      req.onsuccess = () => resolve(new Set(req.result || []));
+      const req = tx.objectStore(store).getAll();
+      req.onsuccess = () => {
+        const map = {};
+        (req.result || []).forEach(r => { map[r[keyPathFor(store)]] = r; });
+        resolve(map);
+      };
       req.onerror = () => reject(req.error);
     });
   }
@@ -78,27 +84,38 @@
     });
   }
 
-  // Migrate localStorage-buffered data into a now-available IDB connection,
-  // putting only keys IDB doesn't already have (so concurrent fresh IDB writes
-  // win), then clear the buffer and stop using the fallback. Runs on every
-  // successful open, so data written during a prior fallback session is adopted
-  // too — not just a within-session late success.
+  // Adopt localStorage-buffered data into a now-available IDB connection. Runs on
+  // every successful open, so data written during a prior fallback session is
+  // migrated too (not just a within-session late success). For a key present in
+  // BOTH stores, keep the NEWER record (higher Lamport clk; activity has no clk
+  // → higher xp) rather than blindly skipping — a presence-only check would drop
+  // a newer offline edit. Flip the fallback off first so writes during migration
+  // go straight to IDB and aren't lost when the localStorage buffer is cleared.
+  // Should a localStorage-buffered record `r` overwrite the IDB record `cur` for
+  // the same key during migration? Keep the NEWER (higher Lamport clk; activity
+  // has no clk → higher xp). Pure, so the data-loss-prevention rule is testable.
+  function migrateWins(r, cur, store) {
+    if (!cur) return true;                                    // new key → adopt
+    if ((r.clk || 0) !== (cur.clk || 0)) return (r.clk || 0) > (cur.clk || 0);
+    if (store === 'activity') return (r.xp || 0) > (cur.xp || 0); // no clk → max xp
+    return false;                                             // tie / older → keep IDB
+  }
+
   async function migrateLS(db) {
-    let buffered = false;
-    try { buffered = STORES.some(s => localStorage.getItem('imonicroat:' + s) != null); } catch (e) { buffered = false; }
-    if (buffered) {
-      for (const store of STORES) {
-        const records = Object.values(lsLoad(store));
-        if (records.length) {
-          const have = await idbKeys(db, store);
-          const missing = records.filter(r => !have.has(r[keyPathFor(store)]));
-          if (missing.length) await idbPutMany(db, store, missing);
-        }
-        try { localStorage.removeItem('imonicroat:' + store); } catch (e) { /* ignore */ }
-      }
-    }
     useFallback = false;
     lsDirty = false;
+    let buffered = false;
+    try { buffered = STORES.some(s => localStorage.getItem('imonicroat:' + s) != null); } catch (e) { buffered = false; }
+    if (!buffered) return;
+    for (const store of STORES) {
+      const records = Object.values(lsLoad(store));
+      if (records.length) {
+        const existing = await idbGetAllMap(db, store);
+        const toPut = records.filter(r => migrateWins(r, existing[r[keyPathFor(store)]], store));
+        if (toPut.length) await idbPutMany(db, store, toPut);
+      }
+      try { localStorage.removeItem('imonicroat:' + store); } catch (e) { /* ignore */ }
+    }
   }
 
   function keyPathFor(store) {
@@ -269,5 +286,5 @@
   }
 
   window.CRO = window.CRO || {};
-  CRO.db = { put, bulkPut, get, getAll, clear, replaceStore, remove, getMeta, setMeta, exportAll, importAll, STORES };
+  CRO.db = { put, bulkPut, get, getAll, clear, replaceStore, remove, getMeta, setMeta, exportAll, importAll, STORES, _migrateWins: migrateWins };
 })();

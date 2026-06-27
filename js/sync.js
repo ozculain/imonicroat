@@ -29,8 +29,10 @@
    TOCTOU window remains between the re-read and the write, but it is self-healing
    — each device re-merges on its next sync — so a missed write is recovered.
    After a sync, the local commit re-merges against a fresh snapshot so a write
-   that landed during the round-trip is never clobbered. The Lamport clock is
-   advanced atomically (see js/clock.js).
+   that landed during the round-trip is preserved (a sub-millisecond window
+   remains between that snapshot and the persist — far smaller than the old
+   network-round-trip window, and self-healing). The Lamport clock is advanced
+   atomically (see js/clock.js).
    ========================================================================= */
 if (typeof window === 'undefined') { global.window = global; } // node test shim
 (function () {
@@ -219,7 +221,9 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     // remote's rev moved (another device wrote concurrently). A narrow TOCTOU
     // window remains, but it catches the common race; self-healing (each device
     // re-merges next sync) recovers the rest.
-    if (baseRev != null) {
+    // baseRev 0 means the remote was empty/fresh — nothing to conflict with, so
+    // skip the extra read (avoids doubling the very first sync's network reads).
+    if (baseRev) {
       const current = await readRemote().catch(() => null);
       const curRev = (current && current.app === 'imonicroat') ? (current.rev || 0) : 0;
       if (curRev !== baseRev) {
@@ -256,6 +260,16 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return merged;
   }
 
+  // After the remote write lands, re-merge `merged` against a FRESH local snapshot
+  // so a write that happened locally DURING the network round-trip wins (higher
+  // clk / max activity) instead of being overwritten when we persist. Testable
+  // seam for the H1 fix. NOTE: a sub-millisecond window still remains between
+  // this snapshot and the importAll that persists the result — far smaller than
+  // the old network-round-trip window, and self-healing on the next sync.
+  async function reconcileLocal(localDump, merged) {
+    return mergeDumps(await localDump(), merged);
+  }
+
   async function syncNow(reason) {
     if (!status.transport || syncing) return false;
     if (status.transport === 'gist' && typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -272,8 +286,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
       // syncs are fire-and-forget). Re-merge against a fresh snapshot so those
       // writes win (higher clk / max activity) instead of being clobbered, then
       // persist additively — importAll merges, never clears.
-      const fresh = await localDump();
-      const final = mergeDumps(fresh, merged);
+      const final = await reconcileLocal(localDump, merged);
       // advance the logical clock past anything observed (atomic + monotonic)
       if (CRO.clock) await CRO.clock.observe(maxClock(final));
       await CRO.db.importAll(final);
@@ -386,6 +399,6 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   }
 
   window.CRO = window.CRO || {};
-  CRO.sync = { init, setup, setupGist, gistInfo, reconnect, disconnect, syncNow, status, mergeDumps, _unionBy: unionBy, _parseRemote: parseRemote, _maxClock: maxClock, _runSync: runSync };
+  CRO.sync = { init, setup, setupGist, gistInfo, reconnect, disconnect, syncNow, status, mergeDumps, _unionBy: unionBy, _parseRemote: parseRemote, _maxClock: maxClock, _runSync: runSync, _reconcileLocal: reconcileLocal };
   if (typeof module !== 'undefined' && module.exports) module.exports = CRO.sync;
 })();

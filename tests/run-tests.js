@@ -429,24 +429,6 @@ console.log('Sync conflict resolution');
   t('C2: clk-less records fall back to timestamp', sync.mergeDumps(legA, legB).overrides[0].patch.en === 'new');
 
   t('C2: maxClock scans all record stores', sync._maxClock({ srs: [{ clk: 3 }], variety: [{ clk: 9 }], flags: [{ clk: 4 }] }) === 9);
-
-  // H1 — the post-sync re-merge against fresh local must preserve a write that
-  // landed during the round-trip (it has a higher clk / larger activity counter).
-  const staleMerged = {
-    app: 'imonicroat',
-    srs: [{ key: 'p1|w:a', cardId: 'w:a', clk: 5, dev: 'dL', stability: 1 }],
-    activity: [{ key: 'p1|2026-06-26|dL', profileId: 'p1', date: '2026-06-26', deviceId: 'dL', xp: 50, lessons: 1 }]
-  };
-  const freshLocal = {
-    app: 'imonicroat',
-    srs: [{ key: 'p1|w:a', cardId: 'w:a', clk: 6, dev: 'dL', stability: 9 }], // graded during sync
-    activity: [{ key: 'p1|2026-06-26|dL', profileId: 'p1', date: '2026-06-26', deviceId: 'dL', xp: 80, lessons: 1 }] // +30 during sync
-  };
-  const reMerged = sync.mergeDumps(freshLocal, staleMerged);
-  t('H1: re-merge keeps the card graded during sync (clk6, stability 9)',
-    reMerged.srs.find(r => r.key === 'p1|w:a').stability === 9);
-  t('H1: re-merge keeps the XP earned during sync (80, not 50)',
-    reMerged.activity.find(a => a.key === 'p1|2026-06-26|dL').xp === 80);
 }
 
 /* ================= stats: per-device sum + streak (real UI code) ================= */
@@ -568,6 +550,16 @@ const dbTests = (async () => {
   t('H2/D4: export omits passphrase/lock/gistSync/deviceId/syncClock', leaked.length === 0, 'leaked: ' + leaked.join(','));
   t('H2/D4: raw GitHub token string is absent from the backup', !JSON.stringify(dump).includes('ghp_SECRET_TOKEN_123'));
   t('D4: non-secret meta (activeProfile) is still exported', metaKeys.includes('activeProfile'));
+
+  // M3 — the localStorage→IDB migration rule must keep the NEWER record, not
+  // blindly skip a key already in IDB (which would drop a newer offline edit)
+  const mw = db._migrateWins;
+  t('M3: new key is adopted', mw({ id: 'x', clk: 1 }, undefined, 'flags') === true);
+  t('M3: newer LS clk overwrites older IDB', mw({ id: 'x', clk: 9 }, { id: 'x', clk: 5 }, 'flags') === true);
+  t('M3: older LS clk does NOT overwrite newer IDB', mw({ id: 'x', clk: 3 }, { id: 'x', clk: 5 }, 'flags') === false);
+  t('M3: activity (no clk) keeps the higher xp', mw({ key: 'a', xp: 80 }, { key: 'a', xp: 50 }, 'activity') === true
+    && mw({ key: 'a', xp: 40 }, { key: 'a', xp: 50 }, 'activity') === false);
+  t('M3: equal clk keeps IDB (no needless write)', mw({ id: 'x', clk: 5 }, { id: 'x', clk: 5 }, 'flags') === false);
 });
 
 /* ================= clock: atomic under concurrency (M1) ================= */
@@ -627,6 +619,26 @@ const syncC4Tests = (async () => {
   try { await sync._runSync(localDump, async () => fullRemote(2), hardFail); }
   catch (e) { propagated = /network down/.test(e.message) && hardCalls === 1; }
   t('C4: non-conflict write error propagates without retry', propagated);
+
+  // H1 (the actual fix glue): reconcileLocal re-reads a FRESH local snapshot and
+  // re-merges, so a write that landed during the round-trip survives the commit.
+  // `merged` is what was written to remote (stale); freshLocal has the during-sync
+  // grade (clk6, stability 9) and the +30 XP (80 vs 50).
+  const writtenToRemote = {
+    app: 'imonicroat',
+    srs: [{ key: 'p1|w:a', cardId: 'w:a', clk: 5, dev: 'dL', stability: 1 }],
+    activity: [{ key: 'p1|d|dL', profileId: 'p1', date: 'd', deviceId: 'dL', xp: 50, lessons: 1 }]
+  };
+  const freshAfterRoundTrip = async () => ({
+    app: 'imonicroat',
+    srs: [{ key: 'p1|w:a', cardId: 'w:a', clk: 6, dev: 'dL', stability: 9 }],
+    activity: [{ key: 'p1|d|dL', profileId: 'p1', date: 'd', deviceId: 'dL', xp: 80, lessons: 1 }]
+  });
+  const committed = await sync._reconcileLocal(freshAfterRoundTrip, writtenToRemote);
+  t('H1: reconcileLocal keeps the card graded during sync (stability 9)',
+    committed.srs.find(r => r.key === 'p1|w:a').stability === 9);
+  t('H1: reconcileLocal keeps the XP earned during sync (80, not 50)',
+    committed.activity.find(a => a.key === 'p1|d|dL').xp === 80);
 });
 
 vaultTests().then(dbTests).then(clockTests).then(syncC4Tests).then(() => {

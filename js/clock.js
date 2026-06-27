@@ -21,15 +21,22 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return run;
   }
 
-  async function load() {
-    if (mem == null) mem = (await CRO.db.getMeta('syncClock')) || 0;
+  // Re-read the persisted value every time and max it against memory: a second
+  // tab of the same PWA shares IndexedDB but not this JS memory, so a cached-only
+  // `mem` would hand out stale (duplicate) values. (This still isn't a cross-tab
+  // atomic CAS — two tabs bumping at the exact same instant could collide — but
+  // it removes the staleness, restoring parity with a read-every-call clock while
+  // keeping the in-tab mutex.)
+  async function current() {
+    const persisted = (await CRO.db.getMeta('syncClock')) || 0;
+    mem = Math.max(mem || 0, persisted);
     return mem;
   }
 
-  /** Atomically increment and return the next clock value. */
+  /** Atomically (within this tab) increment and return the next clock value. */
   async function bump() {
     return serialize(async () => {
-      const next = (await load()) + 1;
+      const next = (await current()) + 1;
       mem = next;
       await CRO.db.setMeta('syncClock', next);
       return next;
@@ -39,7 +46,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   /** Advance past a value observed from a peer (monotonic; never regresses). */
   async function observe(seen) {
     return serialize(async () => {
-      const cur = await load();
+      const cur = await current();
       const next = Math.max(cur, seen || 0);
       if (next !== cur) { mem = next; await CRO.db.setMeta('syncClock', next); }
       return next;
