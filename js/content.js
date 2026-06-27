@@ -146,6 +146,11 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
       id: 'g-red-rijeci', unit: 10, title: 'The second-position rule',
       body: 'Croatian little words — sam/si/je, ću/ćeš, se, mi/ti, ga/je — cluster in second position in the sentence, after the first stressed word: "Zovem se Ana" but "Moj muž se zove Marko." If you remember one word-order rule, make it this one; it explains most of what feels strange at first.',
       source: 'ALX (clitic ordering); EC ch. 26, ch. 40 (second-position clitics)'
+    },
+    {
+      id: 'g-dalmatinski', unit: 1, title: 'Your Dalmatian, beside the standard',
+      body: 'You two speak Dalmatian, so a word shows its Dalmatian form wherever it differs. Three patterns: (1) ikavian — standard ije/je becomes i: dijete → dite, lijep → lip, gdje → di; (2) coastal words from the Venetian centuries: baka → nona, trg → pjaca, sat → ura; (3) habits — final -m softens to -n (idem → iden, volim → volin) and infinitives drop the -i (raditi → radit). Learn the standard štokavian as the backbone — it is what is written and understood everywhere — and let the Dalmatian be how home sounds. If a form here is not how your family says it, flag it.',
+      source: 'Dalmatian ikavian reflex & Adriatic-Romance lexicon (general); refine to family usage via the in-app flag workflow'
     }
   ];
 
@@ -352,6 +357,20 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     W('zedan', 'žedan / žedna', 'thirsty', 'adj', null, 'ZHE-dan', 10, 'HJP s.v. žedan'),
     W('dobiti', 'dobiti', 'to get / receive (perfective)', 'v', null, 'DO-bee-tee', 10, 'HJP s.v. dobiti', { conj: 'dobijem, dobiješ…', note: '"Možemo li dobiti račun?" — the restaurant essential.' })
   ];
+
+  // Dalmatian forms, shown beside the standard word (see the grammar note
+  // "g-dalmatinski"). The standard štokavian stays the answer; this is just how
+  // home sounds. Correct any of these to your family's actual usage with the
+  // in-app flag → review tool.
+  const DAL = {
+    // ikavian: standard ije/je → i
+    dijete: 'dite', mlijeko: 'mliko', lijep: 'lip', gdje: 'di', ovdje: 'ovdi',
+    nedjelja: 'nedilja', srijeda: 'srida', dva: 'dvi', ponedjeljak: 'ponediljak',
+    vidjeti: 'vidit', voljeti: 'volit', zeljeti: 'želit', zivjeti: 'živit', razumjeti: 'razumit',
+    // coastal / Adriatic-Romance lexicon
+    baka: 'nona', djed: 'nono', tata: 'ćaća', trg: 'pjaca', ulica: 'kala', sat: 'ura', novac: 'šoldi'
+  };
+  WORDS.forEach(w => { if (DAL[w.id]) w.dal = DAL[w.id]; });
 
   /* ---------------------------------------------------------------------
      SENTENCES — each is an SRS card too. words[] must reference word ids;

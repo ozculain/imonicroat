@@ -442,6 +442,7 @@ input.typed:focus { border-color: var(--accent-blue); }
 .notes-gram h4 { font-family: var(--serif); font-size: 16px; margin-bottom: 5px; }
 .notes-gram p { font-size: 13.5px; color: var(--ink); }
 .notes-variety { font-size: 13.5px; }
+.intro-dal { font-size: 13.5px; margin-top: 8px; }
 .notes-meta { font-size: 11.5px; color: var(--ink-soft); font-style: italic; border-top: 1px dashed var(--line); padding-top: 9px; }
 .srcline { font-size: 11.5px; color: var(--ink-soft); margin-top: 7px; line-height: 1.8; }
 .src {

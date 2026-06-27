@@ -153,6 +153,12 @@ console.log('Content integrity');
   content.applyOverrides([{ id: 'kava', patch: { en: 'coffee (test)' } }]);
   t('override applies', wordById['kava'].en === 'coffee (test)');
   content.applyOverrides([{ id: 'kava', patch: { en: 'coffee' } }]);
+
+  // Dalmatian forms seeded beside the standard words
+  const dalCount = WORDS.filter(w => w.dal).length;
+  t('Dalmatian forms seeded on words', dalCount >= 15, String(dalCount));
+  t('Dalmatian forms are non-empty strings', WORDS.every(w => !w.dal || (typeof w.dal === 'string' && w.dal.trim().length > 0)));
+  t('Dalmatian overview note present', !!gramById['g-dalmatinski']);
 }
 
 /* ================= exercise engine ================= */

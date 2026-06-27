@@ -479,6 +479,7 @@
       if (item.conj) html += `<p class="notes-line"><b>Present:</b> ${item.conj}</p>`;
       if (item.pf) html += `<p class="notes-line"><b>Perfective partner:</b> ${item.pf}</p>`;
       if (item.forms) html += `<p class="notes-line"><b>Forms taught:</b> ${Object.entries(item.forms).map(([k, v]) => k + ': ' + v).join(' · ')}</p>`;
+      if (item.dal) html += `<p class="notes-line"><b>Dalmatinski:</b> ${esc(item.dal)}</p>`;
     }
     if (item.note) html += `<p class="notes-note">${item.note}</p>`;
     const vars = varietyFor(cardId.slice(2));
@@ -1161,6 +1162,7 @@
       <div class="intro-pron">${word.pron || ''}</div>
       ${word.conj ? `<div class="intro-conj">${word.conj}</div>` : ''}
       ${word.note ? `<div class="intro-note">${word.note}</div>` : ''}
+      ${word.dal ? `<div class="intro-dal">${ic('leaf', 13)} <b>Dalmatinski:</b> <span class="variety-chip">${esc(word.dal)}</span></div>` : ''}
       ${vars.length ? `<div class="notes-variety">${ic('leaf', 13)} ${vars.map(v => `<span class="variety-chip" title="${esc(v.note || '')}">${esc(v.hr)}</span>`).join(' ')}</div>` : ''}
       <div class="srcline">${sourceChips(word.source)}</div>
       <button class="btn primary" id="introNext">Got it</button>`;
