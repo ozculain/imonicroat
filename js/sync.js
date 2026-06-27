@@ -21,10 +21,13 @@
                  GC'd 60 days after deletion
      meta      → never synced (device-local: active profile, settings, handle)
 
-   Known limit: read-merge-write is not atomic across devices, so a write that
-   races another device's write can be lost. It is self-healing (each device
-   re-merges on its next sync) and the corrupt-remote / clock-skew failure modes
-   are handled above, so the residual window is a brief, recoverable one.
+   Concurrency: writes use optimistic concurrency control. The payload carries a
+   monotonic `rev`; on write we set rev = remoteRev + 1 and guard it — the gist
+   transport via an If-Match ETag (best-effort: older GitHub behaviour ignores
+   it), the file transport via a re-read-and-compare just before writing. A
+   detected conflict re-reads, re-merges and retries (up to 3x). A narrow TOCTOU
+   window remains for the file transport, but it is self-healing — each device
+   re-merges on its next sync — so a missed write is recovered, not lost.
    ========================================================================= */
 if (typeof window === 'undefined') { global.window = global; } // node test shim
 (function () {
@@ -41,6 +44,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   let handle = null;           // FileSystemFileHandle (desktop shared-folder transport)
   let gist = null;             // { token, id } (works on every browser, incl. phones)
   let syncing = false;
+  let lastEtag = null;         // gist ETag from the most recent read (for If-Match CAS)
 
   function supported() {
     return typeof window.showSaveFilePicker === 'function' && typeof window.showOpenFilePicker === 'function';
@@ -142,6 +146,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     if (r.status === 404) throw new Error('Gist not found — check the gist id.');
     if (r.status === 401 || r.status === 403) throw new Error('GitHub token rejected — check it has the "gist" scope.');
     if (!r.ok) throw new Error('GitHub error ' + r.status);
+    lastEtag = r.headers.get('etag') || null; // for an If-Match conditional write
     const data = await r.json();
     const f = data.files && data.files[GIST_FILE];
     if (!f) return null;
@@ -154,11 +159,16 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return parseRemote(text);
   }
 
-  async function gistWrite(merged) {
+  async function gistWrite(merged, etag) {
+    const headers = gistHeaders();
+    // best-effort compare-and-swap: if GitHub honors If-Match it returns 412
+    // when the gist changed under us (older versions ignore it harmlessly)
+    if (etag) headers['If-Match'] = etag;
     const body = JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify(merged) } } });
     const r = await fetch('https://api.github.com/gists/' + gist.id, {
-      method: 'PATCH', headers: gistHeaders(), body
+      method: 'PATCH', headers, body
     });
+    if (r.status === 412) { const e = new Error('sync-conflict: gist changed during merge'); e.conflict = true; throw e; }
     if (!r.ok) throw new Error('GitHub write failed (' + r.status + ')');
   }
 
@@ -206,12 +216,44 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return maybeDecrypt(payload);
   }
 
-  async function writeRemote(merged) {
+  async function writeRemote(merged, baseRev) {
     const payload = await maybeEncrypt(merged);
-    if (status.transport === 'gist') return gistWrite(payload);
+    if (status.transport === 'gist') return gistWrite(payload, lastEtag);
+    // file transport has no ETag: re-read just before writing and bail if the
+    // version moved since we merged (another device wrote concurrently). Still a
+    // narrow TOCTOU window, but it catches the common case; self-healing covers
+    // the rest on the next sync.
+    const current = await readRemote().catch(() => null);
+    const curRev = (current && current.app === 'imonicroat') ? (current.rev || 0) : 0;
+    if (baseRev != null && curRev !== baseRev) {
+      const e = new Error('sync-conflict: file changed during merge'); e.conflict = true; throw e;
+    }
     const w = await handle.createWritable();
     await w.write(JSON.stringify(payload));
     await w.close();
+  }
+
+  // The read-merge-write core, with optimistic-concurrency retry. Transport I/O
+  // is injected so this is unit-testable: `read()` returns the decrypted remote
+  // dump (or null), `write(merged, baseRev)` persists it and throws an error with
+  // `.conflict === true` if the remote changed underneath. Returns the dump that
+  // was actually written so the caller can commit it locally.
+  async function runSync(localDump, read, write) {
+    const local = await localDump();
+    let merged = null, wrote = false, lastErr = null;
+    for (let attempt = 0; attempt < 3 && !wrote; attempt++) {
+      const remote = await read();
+      const base = (remote && remote.app === 'imonicroat') ? remote : null;
+      merged = base ? mergeDumps(local, base) : local;
+      // GC old variety tombstones (both devices have long since converged)
+      const tombCutoff = Date.now() - 60 * 864e5;
+      if (merged.variety) merged.variety = merged.variety.filter(v => !(v.deleted && (v.updatedAt || 0) < tombCutoff));
+      merged.rev = (base && base.rev || 0) + 1; // optimistic version counter
+      try { await write(merged, base && base.rev || 0); wrote = true; }
+      catch (e) { if (e && e.conflict) { lastErr = e; continue; } throw e; } // re-read & re-merge
+    }
+    if (!wrote) throw (lastErr || new Error('sync-conflict: could not write after retries'));
+    return merged;
   }
 
   async function syncNow(reason) {
@@ -223,19 +265,14 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     syncing = true;
     status.state = 'syncing';
     try {
-      const remote = await readRemote();
-      const local = await localDump();
-      const merged = (remote && remote.app === 'imonicroat') ? mergeDumps(local, remote) : local;
-      // GC old variety tombstones (both devices have long since converged) so the
-      // store can't grow unbounded with deletions
-      const tombCutoff = Date.now() - 60 * 864e5;
-      if (merged.variety) merged.variety = merged.variety.filter(v => !(v.deleted && (v.updatedAt || 0) < tombCutoff));
+      // read → merge → write with optimistic-concurrency retry; commit locally
+      // only once the remote write has actually landed
+      const merged = await runSync(localDump, readRemote, writeRemote);
       // advance our Lamport clock past anything observed, so later local writes win
       const seen = maxClock(merged);
       const cur = (await CRO.db.getMeta('syncClock')) || 0;
       if (seen > cur) await CRO.db.setMeta('syncClock', seen);
       await CRO.db.importAll(merged);
-      await writeRemote(merged);
       status.connected = true;
       status.state = 'ok';
       status.lastSync = Date.now();
@@ -345,6 +382,6 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   }
 
   window.CRO = window.CRO || {};
-  CRO.sync = { init, setup, setupGist, gistInfo, reconnect, disconnect, syncNow, status, mergeDumps, _unionBy: unionBy, _parseRemote: parseRemote, _maxClock: maxClock };
+  CRO.sync = { init, setup, setupGist, gistInfo, reconnect, disconnect, syncNow, status, mergeDumps, _unionBy: unionBy, _parseRemote: parseRemote, _maxClock: maxClock, _runSync: runSync };
   if (typeof module !== 'undefined' && module.exports) module.exports = CRO.sync;
 })();

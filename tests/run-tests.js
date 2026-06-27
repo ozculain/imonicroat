@@ -489,7 +489,49 @@ const dbTests = (async () => {
     metaKeys.join(','));
 });
 
-vaultTests().then(dbTests).then(() => {
+/* ================= sync optimistic concurrency (C4) ================= */
+const syncC4Tests = (async () => {
+  console.log('Sync optimistic concurrency (C4)');
+  const localDump = async () => ({
+    app: 'imonicroat', profiles: [], activity: [], flags: [], overrides: [], variety: [],
+    srs: [{ key: 'p1|w:a', cardId: 'w:a', lastReview: 5, clk: 1, dev: 'dL' }], meta: []
+  });
+  const fullRemote = (rev) => ({ app: 'imonicroat', rev, srs: [], activity: [], flags: [], overrides: [], variety: [] });
+
+  // happy path: remote present → rev = remoteRev + 1, single write
+  let writes = [];
+  const okWrite = async (m, baseRev) => { writes.push({ rev: m.rev, baseRev }); };
+  let merged = await sync._runSync(localDump, async () => fullRemote(2), okWrite);
+  t('C4: rev bumps to remoteRev+1, written once', merged.rev === 3 && writes.length === 1 && writes[0].baseRev === 2);
+
+  // fresh remote (null) → rev starts at 1, baseRev 0
+  writes = [];
+  merged = await sync._runSync(localDump, async () => null, okWrite);
+  t('C4: fresh remote starts rev at 1', merged.rev === 1 && writes[0].baseRev === 0);
+
+  // conflict then success: first write conflicts, retry re-reads (advancing rev) and succeeds
+  let calls = 0, reads = 0;
+  const advancingRead = async () => { reads++; return fullRemote(reads); };
+  const flakyWrite = async () => { calls++; if (calls === 1) { const e = new Error('conflict'); e.conflict = true; throw e; } };
+  merged = await sync._runSync(localDump, advancingRead, flakyWrite);
+  t('C4: conflict triggers re-read & retry', calls === 2 && reads === 2 && merged.rev === reads + 1);
+
+  // persistent conflict → throws a conflict error after 3 attempts
+  let rejectedConflict = false, attempts = 0;
+  const alwaysConflict = async () => { attempts++; const e = new Error('conflict'); e.conflict = true; throw e; };
+  try { await sync._runSync(localDump, async () => fullRemote(2), alwaysConflict); }
+  catch (e) { rejectedConflict = !!(e && e.conflict); }
+  t('C4: gives up after 3 conflicting attempts', rejectedConflict && attempts === 3);
+
+  // a non-conflict write error propagates immediately, no silent retry
+  let propagated = false, hardCalls = 0;
+  const hardFail = async () => { hardCalls++; throw new Error('network down'); };
+  try { await sync._runSync(localDump, async () => fullRemote(2), hardFail); }
+  catch (e) { propagated = /network down/.test(e.message) && hardCalls === 1; }
+  t('C4: non-conflict write error propagates without retry', propagated);
+});
+
+vaultTests().then(dbTests).then(syncC4Tests).then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }).catch(e => {
