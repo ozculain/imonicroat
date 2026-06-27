@@ -25,28 +25,15 @@
     settings: { retention: 0.9, newPerLesson: 4, showVariety: true, dailyGoalLessons: 1 },
     session: null,
     view: 'home',
-    deviceId: null,   // stable per-device id (activity keys, conflict tiebreak)
-    clock: 0          // local Lamport clock for skew-proof conflict resolution
+    deviceId: null    // stable per-device id (activity keys, conflict tiebreak)
   };
 
   const NEW_WORDS_PER_LESSON = () => state.settings.newPerLesson || 4;
   const XP_CORRECT = 10, XP_HARD = 6;
 
-  function todayKey(d) {
-    d = d || new Date();
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  }
-  function isoWeekKey(d) {
-    d = d ? new Date(d) : new Date();
-    const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const day = (t.getDay() + 6) % 7;
-    t.setDate(t.getDate() - day + 3);
-    const firstThu = new Date(t.getFullYear(), 0, 4);
-    const fday = (firstThu.getDay() + 6) % 7;
-    firstThu.setDate(firstThu.getDate() - fday + 3);
-    const week = 1 + Math.round((t - firstThu) / (7 * 864e5));
-    return t.getFullYear() + '-W' + String(week).padStart(2, '0');
-  }
+  // pure date / streak / week math lives in js/stats.js (unit-tested)
+  const todayKey = CRO.stats.todayKey;
+  const isoWeekKey = CRO.stats.isoWeekKey;
 
   /* ================= boot ================= */
   async function boot() {
@@ -97,15 +84,10 @@
     state.deviceId = id;
     return id;
   }
-  async function bumpClock() {
-    const c = (await CRO.db.getMeta('syncClock') || 0) + 1;
-    await CRO.db.setMeta('syncClock', c);
-    state.clock = c;
-    return c;
-  }
-  /** {clk, dev} stamp for a record about to be written, for skew-proof merges. */
+  /** {clk, dev} stamp for a record about to be written, for skew-proof merges.
+      The clock is advanced atomically by CRO.clock (see js/clock.js). */
   async function stamp() {
-    return { clk: await bumpClock(), dev: await ensureDeviceId() };
+    return { clk: await CRO.clock.bump(), dev: await ensureDeviceId() };
   }
 
   async function saveCard(card) {
@@ -129,40 +111,20 @@
   /* ================= streak & head-to-head ================= */
   async function streakInfo() {
     const acts = await CRO.db.getAll('activity');
-    const byDate = {};
-    acts.forEach(a => {
-      if (a.lessons > 0) {
-        byDate[a.date] = byDate[a.date] || new Set();
-        byDate[a.date].add(a.profileId);
-      }
-    });
     const need = Math.min(2, Math.max(1, state.profiles.length));
-    const doneDay = d => (byDate[d] && byDate[d].size >= need);
-    let streak = 0;
-    const day = new Date();
-    // today counts if done; otherwise streak may still be alive from yesterday
-    if (!doneDay(todayKey(day))) day.setDate(day.getDate() - 1);
-    while (doneDay(todayKey(day))) { streak += 1; day.setDate(day.getDate() - 1); }
-    const today = byDate[todayKey()] || new Set();
+    const s = CRO.stats.streakState(acts, need);
+    const partner = otherProfile();
     return {
-      streak,
-      todayComplete: doneDay(todayKey()),
-      youDone: today.has(state.activeId),
-      partnerDone: state.profiles.length > 1 && otherProfile() ? today.has(otherProfile().id) : true
+      streak: s.streak,
+      todayComplete: s.todayComplete,
+      youDone: s.doneToday.has(state.activeId),
+      partnerDone: state.profiles.length > 1 && partner ? s.doneToday.has(partner.id) : true
     };
   }
 
   async function weekScores() {
     const acts = await CRO.db.getAll('activity');
-    const wk = isoWeekKey();
-    const scores = {};
-    state.profiles.forEach(p => { scores[p.id] = 0; });
-    acts.forEach(a => {
-      if (isoWeekKey(a.date + 'T12:00:00') === wk && scores[a.profileId] !== undefined) {
-        scores[a.profileId] += a.xp;
-      }
-    });
-    return scores;
+    return CRO.stats.weekTotals(acts, isoWeekKey(), state.profiles.map(p => p.id));
   }
 
   /* ================= card availability ================= */
@@ -881,7 +843,7 @@
       if (!file) return;
       try {
         const dump = JSON.parse(await file.text());
-        await CRO.db.importAll(dump);
+        await CRO.db.importAll(dump, { replace: true }); // restore = exact replace
         toast('Imported. Reloading…');
         setTimeout(() => location.reload(), 700);
       } catch (err) { toast('Import failed: ' + err.message); }

@@ -7,6 +7,7 @@ const srs = require(path.join(__dirname, '..', 'js', 'srs.js'));
 const content = require(path.join(__dirname, '..', 'js', 'content.js'));
 const ex = require(path.join(__dirname, '..', 'js', 'exercises.js'));
 const sync = require(path.join(__dirname, '..', 'js', 'sync.js'));
+const stats = require(path.join(__dirname, '..', 'js', 'stats.js'));
 
 let pass = 0, fail = 0;
 function t(name, cond, detail) {
@@ -261,12 +262,16 @@ console.log('Bugfix regressions');
   // A1 — parenthetical glosses in the English answer must not cause false negatives
   t('A1: checkTyped ignores a parenthetical gloss',
     ex.checkTyped('I was in Split.', ['I was in Split. (man speaking)']).ok);
-  const s801 = content.sentById['s801'];
-  if (s801) {
-    t('A1: glossed sentence accepts the natural typed answer',
-      ex.exSentence(s801, 'hr2enType').check(s801.en.replace(/\s*\([^)]*\)\s*/g, '').trim()).ok,
-      s801.en);
+  // drive it through real content: every sentence whose en carries a gloss must
+  // accept the gloss-free natural answer (no silent skip — assert some exist)
+  const glossed = content.SENTENCES.filter(s => /\([^)]*\)/.test(s.en));
+  t('A1: course actually contains glossed sentences to guard', glossed.length > 0, String(glossed.length));
+  let glossBad = '';
+  for (const s of glossed) {
+    const natural = s.en.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
+    if (!ex.exSentence(s, 'hr2enType').check(natural).ok) { glossBad = s.id + ' "' + s.en + '"'; break; }
   }
+  t('A1: every glossed sentence accepts the natural typed answer', glossBad === '', glossBad);
 
   // A2 — gap-fill options must be punctuation-uniform (no lone-comma giveaway)
   ex.reseed(5);
@@ -311,6 +316,18 @@ console.log('Bugfix regressions');
     if (visible.includes(ex.norm(e.target))) { gapNoLeak = false; leakWhy = s.id; }
   }
   t('A4: gap-fill never leaves the answer visible', gapNoLeak, leakWhy);
+  // A4 (non-vacuous): force a repeated target word — ALL occurrences must blank,
+  // and exactly one blank per occurrence
+  let repeatOk = false;
+  for (let seed = 1; seed <= 50 && !repeatOk; seed++) {
+    ex.reseed(seed);
+    const e = ex.exGap({ id: 'syn', unit: 1, en: 'I love and I love', hr: 'Volim i volim kavu' });
+    if (ex.norm(e.target) === 'volim') {
+      const blanks = (e.display.match(/____/g) || []).length;
+      repeatOk = blanks === 2 && !e.display.split(/\s+/).map(ex.norm).includes('volim');
+    }
+  }
+  t('A4: a repeated target word is blanked in every position', repeatOk);
 
   // B2 — out-of-range / NaN ratings and zero-stability seeds stay finite
   const c0 = srs.review(srs.newCard('g0'), 0, Date.now());
@@ -412,6 +429,55 @@ console.log('Sync conflict resolution');
   t('C2: clk-less records fall back to timestamp', sync.mergeDumps(legA, legB).overrides[0].patch.en === 'new');
 
   t('C2: maxClock scans all record stores', sync._maxClock({ srs: [{ clk: 3 }], variety: [{ clk: 9 }], flags: [{ clk: 4 }] }) === 9);
+
+  // H1 — the post-sync re-merge against fresh local must preserve a write that
+  // landed during the round-trip (it has a higher clk / larger activity counter).
+  const staleMerged = {
+    app: 'imonicroat',
+    srs: [{ key: 'p1|w:a', cardId: 'w:a', clk: 5, dev: 'dL', stability: 1 }],
+    activity: [{ key: 'p1|2026-06-26|dL', profileId: 'p1', date: '2026-06-26', deviceId: 'dL', xp: 50, lessons: 1 }]
+  };
+  const freshLocal = {
+    app: 'imonicroat',
+    srs: [{ key: 'p1|w:a', cardId: 'w:a', clk: 6, dev: 'dL', stability: 9 }], // graded during sync
+    activity: [{ key: 'p1|2026-06-26|dL', profileId: 'p1', date: '2026-06-26', deviceId: 'dL', xp: 80, lessons: 1 }] // +30 during sync
+  };
+  const reMerged = sync.mergeDumps(freshLocal, staleMerged);
+  t('H1: re-merge keeps the card graded during sync (clk6, stability 9)',
+    reMerged.srs.find(r => r.key === 'p1|w:a').stability === 9);
+  t('H1: re-merge keeps the XP earned during sync (80, not 50)',
+    reMerged.activity.find(a => a.key === 'p1|2026-06-26|dL').xp === 80);
+}
+
+/* ================= stats: per-device sum + streak (real UI code) ================= */
+console.log('Stats (streak / weekly duel)');
+{
+  // C3 real consumer: two device records for the SAME profile+day must SUM
+  const wk = stats.isoWeekKey('2026-06-24T12:00:00');
+  const acts = [
+    { profileId: 'p1', date: '2026-06-24', deviceId: 'dA', xp: 50, lessons: 1 },
+    { profileId: 'p1', date: '2026-06-24', deviceId: 'dB', xp: 30, lessons: 1 }, // same day, other device
+    { profileId: 'p2', date: '2026-06-24', deviceId: 'dA', xp: 15, lessons: 1 }
+  ];
+  const totals = stats.weekTotals(acts, wk, ['p1', 'p2']);
+  t('stats: per-device same-day XP sums in weekTotals (80)', totals.p1 === 80, JSON.stringify(totals));
+  t('stats: other profile counted separately (15)', totals.p2 === 15);
+
+  // streak: a day counts only when `need` distinct profiles practised it;
+  // multiple device records for one profile still count that profile once
+  const day = '2026-06-26';
+  const ref = new Date(2026, 5, 26, 12, 0, 0);
+  const both = [
+    { profileId: 'p1', date: day, deviceId: 'dA', xp: 10, lessons: 1 },
+    { profileId: 'p1', date: day, deviceId: 'dB', xp: 10, lessons: 1 }, // same profile twice
+    { profileId: 'p2', date: day, deviceId: 'dA', xp: 10, lessons: 1 }
+  ];
+  const sBoth = stats.streakState(both, 2, ref);
+  t('stats: day complete when both profiles practised (multi-device safe)', sBoth.todayComplete && sBoth.streak === 1);
+  const onlyOne = both.slice(0, 2); // both records are p1 → only one distinct profile
+  const sOne = stats.streakState(onlyOne, 2, ref);
+  t('stats: same profile on two devices does NOT satisfy need=2', !sOne.todayComplete && sOne.streak === 0);
+  t('stats: doneToday reflects who practised', sBoth.doneToday.has('p1') && sBoth.doneToday.has('p2'));
 }
 
 /* ================= vault (E2E crypto) ================= */
@@ -458,7 +524,7 @@ console.log('PWA assets');
     t('manifest icon exists: ' + i.src, fs.existsSync(path.join(root, i.src))));
 }
 
-/* ================= db import / replace ================= */
+/* ================= db import (merge vs replace) + export hygiene ================= */
 const dbTests = (async () => {
   console.log('DB import/replace');
   // db.js has no indexedDB in node → it uses its localStorage fallback; shim it
@@ -470,23 +536,55 @@ const dbTests = (async () => {
   };
   require(path.join(__dirname, '..', 'js', 'db.js'));
   const db = global.CRO.db;
+
+  // H1/D2 — DEFAULT importAll (what sync uses) MERGES, never clears: a record
+  // not in the dump (e.g. written during an in-flight sync) must survive.
   await db.put('flags', { id: 'f1', note: 'old' });
-  await db.put('flags', { id: 'f2', note: 'stale' });
+  await db.put('flags', { id: 'f2', note: 'concurrent-write' });
   await db.setMeta('passphrase', 'secret');
   await db.importAll({ app: 'imonicroat', flags: [{ id: 'f1', note: 'new' }], meta: [] });
-  const flags = await db.getAll('flags');
-  t('D2: import replaces store (orphan f2 removed)',
-    flags.length === 1 && flags[0].id === 'f1' && flags[0].note === 'new',
+  let flags = await db.getAll('flags');
+  t('H1/D2: default import merges (concurrent f2 NOT clobbered, f1 updated)',
+    flags.length === 2 && !!flags.find(f => f.id === 'f2') && flags.find(f => f.id === 'f1').note === 'new',
     JSON.stringify(flags));
   t('D2: device-local meta survives an import with meta:[]',
     (await db.getMeta('passphrase')) === 'secret');
 
-  // D4: exported backups must not carry passphrase or lock
+  // D2 — {replace:true} (backup restore) DOES remove orphans
+  await db.importAll({ app: 'imonicroat', flags: [{ id: 'f1', note: 'restored' }], meta: [] }, { replace: true });
+  flags = await db.getAll('flags');
+  t('D2: replace-mode import removes orphans (only f1 remains)',
+    flags.length === 1 && flags[0].id === 'f1' && flags[0].note === 'restored', JSON.stringify(flags));
+
+  // D4/H2 — exported backups must omit ALL device-local secrets/identity
   await db.setMeta('lock', { salt: 'x', hash: 'y' });
+  await db.setMeta('gistSync', { token: 'ghp_SECRET_TOKEN_123', id: 'gid' });
+  await db.setMeta('deviceId', 'dXYZ');
+  await db.setMeta('syncClock', 42);
+  await db.setMeta('activeProfile', 'p1'); // this one SHOULD remain exportable
   const dump = await db.exportAll();
   const metaKeys = dump.meta.map(m => m.key);
-  t('D4: export omits passphrase and lock', !metaKeys.includes('passphrase') && !metaKeys.includes('lock'),
-    metaKeys.join(','));
+  const leaked = ['passphrase', 'lock', 'gistSync', 'deviceId', 'syncClock'].filter(k => metaKeys.includes(k));
+  t('H2/D4: export omits passphrase/lock/gistSync/deviceId/syncClock', leaked.length === 0, 'leaked: ' + leaked.join(','));
+  t('H2/D4: raw GitHub token string is absent from the backup', !JSON.stringify(dump).includes('ghp_SECRET_TOKEN_123'));
+  t('D4: non-secret meta (activeProfile) is still exported', metaKeys.includes('activeProfile'));
+});
+
+/* ================= clock: atomic under concurrency (M1) ================= */
+const clockTests = (async () => {
+  console.log('Clock (atomic Lamport)');
+  require(path.join(__dirname, '..', 'js', 'clock.js'));
+  const clock = global.CRO.clock;
+  await global.CRO.db.setMeta('syncClock', 0);
+  clock._reset();
+  // fire 100 concurrent bumps — the non-atomic read-modify-write collided here
+  const results = await Promise.all(Array.from({ length: 100 }, () => clock.bump()));
+  t('M1: 100 concurrent bumps are all distinct (no collision)', new Set(results).size === 100, 'unique=' + new Set(results).size);
+  t('M1: they cover exactly 1..100 (no gaps)', Math.min.apply(null, results) === 1 && Math.max.apply(null, results) === 100);
+  await clock.observe(5); // below current → must not regress
+  t('M1: observe(below) does not regress', (await clock.bump()) === 101);
+  await clock.observe(500); // above current → advances
+  t('M1: observe(above) advances the clock', (await clock.bump()) === 501);
 });
 
 /* ================= sync optimistic concurrency (C4) ================= */
@@ -531,7 +629,7 @@ const syncC4Tests = (async () => {
   t('C4: non-conflict write error propagates without retry', propagated);
 });
 
-vaultTests().then(dbTests).then(syncC4Tests).then(() => {
+vaultTests().then(dbTests).then(clockTests).then(syncC4Tests).then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }).catch(e => {

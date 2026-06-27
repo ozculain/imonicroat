@@ -22,12 +22,15 @@
      meta      → never synced (device-local: active profile, settings, handle)
 
    Concurrency: writes use optimistic concurrency control. The payload carries a
-   monotonic `rev`; on write we set rev = remoteRev + 1 and guard it — the gist
-   transport via an If-Match ETag (best-effort: older GitHub behaviour ignores
-   it), the file transport via a re-read-and-compare just before writing. A
-   detected conflict re-reads, re-merges and retries (up to 3x). A narrow TOCTOU
-   window remains for the file transport, but it is self-healing — each device
-   re-merges on its next sync — so a missed write is recovered, not lost.
+   monotonic `rev`; on write we set rev = remoteRev + 1 and, just before writing,
+   re-read the remote and bail if its rev moved (client-side, for BOTH transports
+   — GitHub does NOT honor If-Match on gist PATCH, so there is no server-side
+   CAS). A detected conflict re-reads, re-merges and retries (up to 3x). A narrow
+   TOCTOU window remains between the re-read and the write, but it is self-healing
+   — each device re-merges on its next sync — so a missed write is recovered.
+   After a sync, the local commit re-merges against a fresh snapshot so a write
+   that landed during the round-trip is never clobbered. The Lamport clock is
+   advanced atomically (see js/clock.js).
    ========================================================================= */
 if (typeof window === 'undefined') { global.window = global; } // node test shim
 (function () {
@@ -44,7 +47,6 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   let handle = null;           // FileSystemFileHandle (desktop shared-folder transport)
   let gist = null;             // { token, id } (works on every browser, incl. phones)
   let syncing = false;
-  let lastEtag = null;         // gist ETag from the most recent read (for If-Match CAS)
 
   function supported() {
     return typeof window.showSaveFilePicker === 'function' && typeof window.showOpenFilePicker === 'function';
@@ -146,7 +148,6 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     if (r.status === 404) throw new Error('Gist not found — check the gist id.');
     if (r.status === 401 || r.status === 403) throw new Error('GitHub token rejected — check it has the "gist" scope.');
     if (!r.ok) throw new Error('GitHub error ' + r.status);
-    lastEtag = r.headers.get('etag') || null; // for an If-Match conditional write
     const data = await r.json();
     const f = data.files && data.files[GIST_FILE];
     if (!f) return null;
@@ -159,16 +160,11 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return parseRemote(text);
   }
 
-  async function gistWrite(merged, etag) {
-    const headers = gistHeaders();
-    // best-effort compare-and-swap: if GitHub honors If-Match it returns 412
-    // when the gist changed under us (older versions ignore it harmlessly)
-    if (etag) headers['If-Match'] = etag;
+  async function gistWrite(merged) {
     const body = JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify(merged) } } });
     const r = await fetch('https://api.github.com/gists/' + gist.id, {
-      method: 'PATCH', headers, body
+      method: 'PATCH', headers: gistHeaders(), body
     });
-    if (r.status === 412) { const e = new Error('sync-conflict: gist changed during merge'); e.conflict = true; throw e; }
     if (!r.ok) throw new Error('GitHub write failed (' + r.status + ')');
   }
 
@@ -217,17 +213,21 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   }
 
   async function writeRemote(merged, baseRev) {
-    const payload = await maybeEncrypt(merged);
-    if (status.transport === 'gist') return gistWrite(payload, lastEtag);
-    // file transport has no ETag: re-read just before writing and bail if the
-    // version moved since we merged (another device wrote concurrently). Still a
-    // narrow TOCTOU window, but it catches the common case; self-healing covers
-    // the rest on the next sync.
-    const current = await readRemote().catch(() => null);
-    const curRev = (current && current.app === 'imonicroat') ? (current.rev || 0) : 0;
-    if (baseRev != null && curRev !== baseRev) {
-      const e = new Error('sync-conflict: file changed during merge'); e.conflict = true; throw e;
+    // Optimistic concurrency for BOTH transports via a client-side rev re-read.
+    // GitHub ignores If-Match on gist PATCH (no server-side CAS), and the file
+    // transport has no ETag, so we re-read right before writing and bail if the
+    // remote's rev moved (another device wrote concurrently). A narrow TOCTOU
+    // window remains, but it catches the common race; self-healing (each device
+    // re-merges next sync) recovers the rest.
+    if (baseRev != null) {
+      const current = await readRemote().catch(() => null);
+      const curRev = (current && current.app === 'imonicroat') ? (current.rev || 0) : 0;
+      if (curRev !== baseRev) {
+        const e = new Error('sync-conflict: remote changed during merge'); e.conflict = true; throw e;
+      }
     }
+    const payload = await maybeEncrypt(merged);
+    if (status.transport === 'gist') return gistWrite(payload);
     const w = await handle.createWritable();
     await w.write(JSON.stringify(payload));
     await w.close();
@@ -268,11 +268,15 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
       // read → merge → write with optimistic-concurrency retry; commit locally
       // only once the remote write has actually landed
       const merged = await runSync(localDump, readRemote, writeRemote);
-      // advance our Lamport clock past anything observed, so later local writes win
-      const seen = maxClock(merged);
-      const cur = (await CRO.db.getMeta('syncClock')) || 0;
-      if (seen > cur) await CRO.db.setMeta('syncClock', seen);
-      await CRO.db.importAll(merged);
+      // A write may have landed locally DURING the network round-trip (post-edit
+      // syncs are fire-and-forget). Re-merge against a fresh snapshot so those
+      // writes win (higher clk / max activity) instead of being clobbered, then
+      // persist additively — importAll merges, never clears.
+      const fresh = await localDump();
+      const final = mergeDumps(fresh, merged);
+      // advance the logical clock past anything observed (atomic + monotonic)
+      if (CRO.clock) await CRO.clock.observe(maxClock(final));
+      await CRO.db.importAll(final);
       status.connected = true;
       status.state = 'ok';
       status.lastSync = Date.now();

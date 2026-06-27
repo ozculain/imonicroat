@@ -31,8 +31,10 @@
       const fellBack = () => { if (!settled) { settled = true; useFallback = true; resolve(null); } };
       const succeeded = db => {
         dbInstance = db;
-        if (settled) { adoptIdb(db); return; } // arrived AFTER we fell back → migrate
-        settled = true; resolve(db);
+        if (!settled) { settled = true; resolve(db); }
+        // adopt any localStorage-buffered data — this session's fallback writes
+        // OR a prior session that fell back — without clobbering fresh IDB writes
+        migrateLS(db).catch(() => { /* migration is best-effort */ });
       };
       // Some environments (notably file:// in locked-down browsers) leave the
       // open request pending. Fall back to localStorage after 5s, but DON'T
@@ -58,34 +60,44 @@
     return opening;
   }
 
-  // Adopt a late-arriving IDB connection: migrate localStorage-buffered writes
-  // that aren't already in IDB (so concurrent fresh IDB writes aren't clobbered),
-  // then stop using the fallback.
-  async function adoptIdb(db) {
-    useFallback = false;
-    if (!lsDirty) return;
-    for (const store of STORES) {
-      const buffered = Object.values(lsLoad(store));
-      if (buffered.length) {
-        const have = await new Promise((resolve, reject) => {
-          const tx = db.transaction(store, 'readonly');
-          const req = tx.objectStore(store).getAllKeys();
-          req.onsuccess = () => resolve(new Set(req.result || []));
-          req.onerror = () => reject(req.error);
-        });
-        const missing = buffered.filter(r => !have.has(r[keyPathFor(store)]));
-        if (missing.length) {
-          await new Promise((resolve, reject) => {
-            const tx = db.transaction(store, 'readwrite');
-            const os = tx.objectStore(store);
-            for (const r of missing) os.put(r);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
-          });
+  function idbKeys(db, store) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readonly');
+      const req = tx.objectStore(store).getAllKeys();
+      req.onsuccess = () => resolve(new Set(req.result || []));
+      req.onerror = () => reject(req.error);
+    });
+  }
+  function idbPutMany(db, store, records) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite');
+      const os = tx.objectStore(store);
+      for (const r of records) os.put(r);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // Migrate localStorage-buffered data into a now-available IDB connection,
+  // putting only keys IDB doesn't already have (so concurrent fresh IDB writes
+  // win), then clear the buffer and stop using the fallback. Runs on every
+  // successful open, so data written during a prior fallback session is adopted
+  // too — not just a within-session late success.
+  async function migrateLS(db) {
+    let buffered = false;
+    try { buffered = STORES.some(s => localStorage.getItem('imonicroat:' + s) != null); } catch (e) { buffered = false; }
+    if (buffered) {
+      for (const store of STORES) {
+        const records = Object.values(lsLoad(store));
+        if (records.length) {
+          const have = await idbKeys(db, store);
+          const missing = records.filter(r => !have.has(r[keyPathFor(store)]));
+          if (missing.length) await idbPutMany(db, store, missing);
         }
+        try { localStorage.removeItem('imonicroat:' + store); } catch (e) { /* ignore */ }
       }
-      try { localStorage.removeItem('imonicroat:' + store); } catch (e) { /* ignore */ }
     }
+    useFallback = false;
     lsDirty = false;
   }
 
@@ -180,6 +192,26 @@
     });
   }
 
+  // Replace a store's contents in a SINGLE transaction (clear + put), so a crash
+  // or error mid-operation can't leave the store wiped with no rollback.
+  async function replaceStore(store, records) {
+    const db = await open();
+    if (useFallback || !db) {
+      const obj = {};
+      for (const r of records) obj[r[keyPathFor(store)]] = r;
+      lsSave(store, obj);
+      return;
+    }
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite');
+      const os = tx.objectStore(store);
+      os.clear();
+      for (const r of records) os.put(r);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async function remove(store, key) {
     const db = await open();
     if (useFallback || !db) {
@@ -209,27 +241,33 @@
   async function exportAll() {
     const dump = { app: 'imonicroat', version: DB_VERSION, exportedAt: new Date().toISOString() };
     for (const s of STORES) dump[s] = await getAll(s);
-    // strip device-local secrets: the live file handle (unserializable) and the
-    // passphrase / lock hash, which must never travel in a backup file
-    dump.meta = dump.meta.filter(m => !['syncHandle', 'passphrase', 'lock'].includes(m.key));
+    // strip everything device-local / secret so a backup file can be shared
+    // safely: the live file handle (unserializable), the passphrase + lock hash,
+    // the GitHub token (gistSync), and the per-device sync identity (deviceId,
+    // syncClock) — cloning the identity onto another device corrupts merges.
+    const DEVICE_LOCAL = ['syncHandle', 'passphrase', 'lock', 'gistSync', 'deviceId', 'syncClock'];
+    dump.meta = dump.meta.filter(m => !DEVICE_LOCAL.includes(m.key));
     return dump;
   }
 
-  async function importAll(dump) {
+  // importAll merges by default (additive bulkPut) — this is what sync uses, and
+  // it must NEVER clear, or a write that lands during an in-flight sync would be
+  // destroyed. Pass {replace:true} ONLY for a user-initiated backup restore,
+  // where exact replacement (orphan removal) is wanted and no concurrent writes
+  // are in flight.
+  async function importAll(dump, opts) {
     if (!dump || dump.app !== 'imonicroat') throw new Error('Not an Imo i Nicro backup file.');
+    const replace = !!(opts && opts.replace);
     for (const s of STORES) {
       if (!Array.isArray(dump[s])) continue;
-      // meta is device-local (passphrase, gist token, active profile, file
-      // handle); merge it without clearing so a sync dump (meta:[]) or a
-      // secret-stripped backup never wipes this device's keys.
+      // meta is device-local (passphrase, gist token, deviceId, active profile,
+      // file handle); always merge it, never clear, regardless of mode.
       if (s === 'meta') { await bulkPut('meta', dump.meta); continue; }
-      // every other store: replace, so a restore doesn't leave orphaned records.
-      // (A sync merge passes a full superset, so clear-then-put is exact there too.)
-      await clear(s);
-      await bulkPut(s, dump[s]);
+      if (replace) await replaceStore(s, dump[s]);
+      else await bulkPut(s, dump[s]);
     }
   }
 
   window.CRO = window.CRO || {};
-  CRO.db = { put, bulkPut, get, getAll, clear, remove, getMeta, setMeta, exportAll, importAll, STORES };
+  CRO.db = { put, bulkPut, get, getAll, clear, replaceStore, remove, getMeta, setMeta, exportAll, importAll, STORES };
 })();

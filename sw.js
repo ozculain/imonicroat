@@ -3,7 +3,7 @@
    from cache, silent refresh in the background, new version on next open. */
 'use strict';
 
-const VERSION = 'imonicroat-06bc0d766d';
+const VERSION = 'imonicroat-861271f6e8';
 const FILES = [
   './',
   'index.html',
@@ -11,6 +11,8 @@ const FILES = [
   'js/icons.js',
   'js/srs.js',
   'js/db.js',
+  'js/clock.js',
+  'js/stats.js',
   'js/vault.js',
   'js/sync.js',
   'js/audio.js',
@@ -49,7 +51,7 @@ self.addEventListener('fetch', e => {
             return resp;
           })
           .catch(() => null);
-        if (cached) { fresh; return cached; } // serve cache now, revalidate in background
+        if (cached) { fresh.catch(() => {}); return cached; } // serve cache now, revalidate in background
         return fresh.then(resp => {
           if (resp) return resp;
           // offline & uncached: serve the app shell for navigations

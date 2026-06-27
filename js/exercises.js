@@ -41,7 +41,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return (s || '')
       .toLowerCase()
       .replace(/\([^)]*\)/g, '')   // drop parenthetical glosses, e.g. "(man speaking)"
-      .replace(/[.,!?;:'"„"…‘’´`-]/g, '')
+      .replace(/[.,!?;:'"„"…‘’´`()-]/g, '') // incl. any stray unbalanced parens
       .replace(/\s+/g, ' ')
       .trim();
   }
