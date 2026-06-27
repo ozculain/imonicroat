@@ -176,6 +176,21 @@ tests/smoke.html            # browser boot smoke test
 tests/smoke2.html           # end-to-end lesson drive
 ```
 
+`run-tests.js` is dependency-free. For an integration boot — the real app loaded
+into a headless DOM and driven through onboarding → a full lesson → encrypted
+gist sync → the variety/settings/review screens → a flag correction, asserting no
+runtime errors and that data persists through both storage backends — opt in with
+the two dev-only packages:
+
+```
+npm install --no-save jsdom fake-indexeddb
+node tests/boot.js          # skips cleanly if those packages aren't installed
+```
+
+This exercises the app wiring and the sync/clock/persistence paths that the pure
+unit tests can't (including that a write made *during* a sync survives the
+commit). The app itself stays zero-dependency; these are test-only.
+
 The content-integrity tests enforce the course's own rules: every sentence's
 words must already be introduced, every noun must carry a gender, every item
 must cite a source.
