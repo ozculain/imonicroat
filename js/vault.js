@@ -83,13 +83,29 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   /* ---------------- local lock ---------------- */
   const UNLOCK_LS = 'imonicroat:unlock';
 
-  async function setPassphrase(pass) {
+  // The household passphrase encrypts sync. It is stored without turning on the
+  // local lock screen — sync can be private without gating every app open.
+  async function setSyncPassphrase(pass) {
+    await CRO.db.setMeta('passphrase', pass);
+  }
+
+  // Turn ON the optional local lock screen, using `pass` as the gate (and as the
+  // sync passphrase). Off by default; only set when the user asks for it.
+  async function enableLock(pass) {
     const salt = cryptoObj.getRandomValues(new Uint8Array(16));
     const hash = await passHash(pass, salt, ITER);
     await CRO.db.setMeta('lock', { salt: b64(salt), hash, it: ITER });
-    await CRO.db.setMeta('passphrase', pass); // device-local, used to encrypt sync
+    await CRO.db.setMeta('passphrase', pass);
     try { localStorage.setItem(UNLOCK_LS, hash); } catch (e) { }
   }
+
+  // Turn the lock OFF. Keeps the sync passphrase so syncing still works.
+  async function disableLock() {
+    await CRO.db.remove('meta', 'lock');
+    try { localStorage.removeItem(UNLOCK_LS); sessionStorage.removeItem(UNLOCK_LS); } catch (e) { }
+  }
+
+  const setPassphrase = enableLock; // back-compat alias
 
   async function hasLock() { return !!(await CRO.db.getMeta('lock')); }
 
@@ -123,6 +139,6 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   }
 
   window.CRO = window.CRO || {};
-  CRO.vault = { encrypt, decrypt, isEnvelope, setPassphrase, hasLock, isUnlocked, unlock, getPassphrase, lockNow, _passHash: passHash };
+  CRO.vault = { encrypt, decrypt, isEnvelope, setSyncPassphrase, enableLock, disableLock, setPassphrase, hasLock, isUnlocked, unlock, getPassphrase, lockNow, _passHash: passHash };
   if (typeof module !== 'undefined' && module.exports) module.exports = CRO.vault;
 })();

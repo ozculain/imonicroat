@@ -361,6 +361,26 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
 
   function gistInfo() { return gist ? { id: gist.id } : null; }
 
+  // One-paste device pairing: bundle the gist token + id into a single code the
+  // other device can connect with (it still needs the shared passphrase, which is
+  // deliberately NOT in the code).
+  function pairingCode() {
+    if (!gist) return null;
+    try { return btoa(JSON.stringify({ t: gist.token, g: gist.id })); } catch (e) { return null; }
+  }
+  function parsePairing(code) {
+    try {
+      const o = JSON.parse(atob(String(code || '').trim()));
+      if (o && o.t && o.g) return { token: o.t, id: o.g };
+    } catch (e) { /* not a valid code */ }
+    return null;
+  }
+  async function connectWithCode(code) {
+    const p = parsePairing(code);
+    if (!p) { status.error = 'That pairing code is not valid.'; return false; }
+    return setupGist(p.token, p.id);
+  }
+
   /** User gesture: re-grant permission to the remembered file. */
   async function reconnect() {
     if (!handle) return false;
@@ -399,6 +419,6 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   }
 
   window.CRO = window.CRO || {};
-  CRO.sync = { init, setup, setupGist, gistInfo, reconnect, disconnect, syncNow, status, mergeDumps, _unionBy: unionBy, _parseRemote: parseRemote, _maxClock: maxClock, _runSync: runSync, _reconcileLocal: reconcileLocal };
+  CRO.sync = { init, setup, setupGist, gistInfo, pairingCode, connectWithCode, reconnect, disconnect, syncNow, status, mergeDumps, _unionBy: unionBy, _parseRemote: parseRemote, _maxClock: maxClock, _runSync: runSync, _reconcileLocal: reconcileLocal, _parsePairing: parsePairing };
   if (typeof module !== 'undefined' && module.exports) module.exports = CRO.sync;
 })();

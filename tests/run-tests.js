@@ -435,6 +435,12 @@ console.log('Sync conflict resolution');
   t('C2: clk-less records fall back to timestamp', sync.mergeDumps(legA, legB).overrides[0].patch.en === 'new');
 
   t('C2: maxClock scans all record stores', sync._maxClock({ srs: [{ clk: 3 }], variety: [{ clk: 9 }], flags: [{ clk: 4 }] }) === 9);
+
+  // D: pairing code round-trip (one paste = token + gist id)
+  const b64 = s => (typeof btoa !== 'undefined') ? btoa(s) : Buffer.from(s, 'binary').toString('base64');
+  const code = b64(JSON.stringify({ t: 'ghp_secret', g: 'gid123' }));
+  t('D: pairing code decodes to token + id', JSON.stringify(sync._parsePairing(code)) === JSON.stringify({ token: 'ghp_secret', id: 'gid123' }));
+  t('D: a junk pairing code → null', sync._parsePairing('not-a-code') === null && sync._parsePairing('') === null);
 }
 
 /* ================= stats: per-device sum + streak (real UI code) ================= */
@@ -466,6 +472,31 @@ console.log('Stats (streak / weekly duel)');
   const sOne = stats.streakState(onlyOne, 2, ref);
   t('stats: same profile on two devices does NOT satisfy need=2', !sOne.todayComplete && sOne.streak === 0);
   t('stats: doneToday reflects who practised', sBoth.doneToday.has('p1') && sBoth.doneToday.has('p2'));
+
+  // A — forgiving streak
+  const D = (pid, date) => ({ profileId: pid, date, deviceId: 'd', xp: 10, lessons: 1 });
+  const withGap = [
+    D('p1', '2026-06-26'), D('p2', '2026-06-26'),
+    // 2026-06-25 missed entirely
+    D('p1', '2026-06-24'), D('p2', '2026-06-24'),
+    D('p1', '2026-06-23'), D('p2', '2026-06-23')
+  ];
+  t('A: one missed day does not reset the streak (grace)', stats.streakState(withGap, 2, ref).streak === 3, String(stats.streakState(withGap, 2, ref).streak));
+  t('A: with grace off, the gap breaks it', stats.streakState(withGap, 2, ref, { grace: 0 }).streak === 1);
+
+  // A — "you last night, me this morning" counts as one shared day
+  const split = [D('p1', '2026-06-25'), D('p2', '2026-06-26')];
+  t('A: cross-day pair counts (48h window)', stats.streakState(split, 2, ref).todayComplete === true);
+  t('A: strict same-day would not (window off)', stats.streakState(split, 2, ref, { windowDays: 0 }).todayComplete === false);
+
+  // A — no free days: a day with zero activity never counts
+  const gapAfterBoth = [D('p1', '2026-06-25'), D('p2', '2026-06-25')]; // nothing on the 26th
+  t('A: a day with no activity is not "done" via the window', stats.streakState(gapAfterBoth, 2, ref).todayComplete === false);
+
+  // A — personal streak is not hostage to the partner
+  const soloKeen = [D('p1', '2026-06-26'), D('p1', '2026-06-25'), D('p1', '2026-06-24')];
+  t('A: your personal streak counts your own days', stats.personalStreak(soloKeen, 'p1', ref) === 3);
+  t('A: partner absent → your streak still stands', stats.personalStreak(soloKeen, 'p2', ref) === 0);
 }
 
 /* ================= vault (E2E crypto) ================= */

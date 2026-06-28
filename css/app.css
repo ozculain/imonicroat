@@ -159,6 +159,8 @@ h1, h2, h3, .brand-name, .intro-hr, .ex-big, .streak-n, .notes-hr {
 .h2h-row { display: grid; grid-template-columns: 64px 1fr 38px; gap: 8px; align-items: center; font-size: 13px; }
 .h2h-bar { height: 9px; border-radius: 5px; background: var(--paper-deep); overflow: hidden; }
 .h2h-bar div { height: 100%; border-radius: 5px; transition: width .4s ease; min-width: 3px; }
+.h2h-bar.wide { display: flex; height: 11px; }
+.h2h-bar.wide div { border-radius: 0; }
 .h2h-xp { text-align: right; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .h2h-lead { font-size: 12px; color: var(--accent-blue); font-style: italic; }
 

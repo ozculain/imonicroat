@@ -42,24 +42,76 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return scores;
   }
 
-  /** Shared-streak state. A day counts when `need` distinct profiles have a
-      record with lessons>0 (any device). `refDate` defaults to now (passable for
-      tests). Returns {streak, todayComplete, doneToday:Set<profileId>}. */
-  function streakState(acts, need, refDate) {
-    const byDate = {};
+  function activeDaysByProfile(acts) {
+    const by = {};
     (acts || []).forEach(a => {
-      if (a.lessons > 0) { (byDate[a.date] = byDate[a.date] || new Set()).add(a.profileId); }
+      if (a.lessons > 0) { (by[a.profileId] = by[a.profileId] || new Set()).add(a.date); }
     });
-    const doneDay = d => !!(byDate[d] && byDate[d].size >= need);
+    return by;
+  }
+  const shiftKey = (dateStr, n) => {
+    const d = new Date(dateStr + 'T12:00:00'); d.setDate(d.getDate() - n); return todayKey(d);
+  };
+
+  /** Forgiving shared-streak state.
+      - A day counts only if there's real activity on it (no free days), and
+        `need` profiles are "in sync" — each practised on the day OR within the
+        previous `windowDays` (default 1), so "you last night, me this morning"
+        still counts as one shared day.
+      - The run tolerates up to `grace` (default 1) fully-missed days, so one
+        skipped day doesn't reset everything.
+      `refDate` defaults to now (passable for tests). opts: {grace, windowDays}.
+      Returns {streak, todayComplete, doneToday:Set<profileId actually active today>}. */
+  function streakState(acts, need, refDate, opts) {
+    opts = opts || {};
+    const grace = opts.grace == null ? 1 : opts.grace;
+    const windowDays = opts.windowDays == null ? 1 : opts.windowDays;
+    const by = activeDaysByProfile(acts);
+    const profiles = Object.keys(by);
+    const covers = (pid, D) => {
+      for (let k = 0; k <= windowDays; k++) if (by[pid].has(shiftKey(D, k))) return true;
+      return false;
+    };
+    const sharedDone = D => {
+      if (!profiles.some(pid => by[pid].has(D))) return false; // anchor: real activity on D
+      let c = 0;
+      for (const pid of profiles) if (covers(pid, D)) c++;
+      return c >= need;
+    };
     const day = refDate ? new Date(refDate) : new Date();
     const todayStr = todayKey(day);
-    let streak = 0;
-    if (!doneDay(todayStr)) day.setDate(day.getDate() - 1);
-    while (doneDay(todayKey(day))) { streak += 1; day.setDate(day.getDate() - 1); }
-    return { streak, todayComplete: doneDay(todayStr), doneToday: byDate[todayStr] || new Set() };
+    const doneToday = new Set(profiles.filter(pid => by[pid].has(todayStr)));
+
+    let streak = 0, graceLeft = grace;
+    if (!sharedDone(todayStr)) day.setDate(day.getDate() - 1); // today still open, don't break on it
+    while (true) {
+      const d = todayKey(day);
+      if (sharedDone(d)) { streak += 1; day.setDate(day.getDate() - 1); }
+      else if (graceLeft > 0) { graceLeft -= 1; day.setDate(day.getDate() - 1); }
+      else break;
+    }
+    return { streak, todayComplete: sharedDone(todayStr), doneToday };
+  }
+
+  /** One person's own day-streak (not hostage to the partner), same grace rule. */
+  function personalStreak(acts, profileId, refDate, opts) {
+    opts = opts || {};
+    const grace = opts.grace == null ? 1 : opts.grace;
+    const days = new Set();
+    (acts || []).forEach(a => { if (a.profileId === profileId && a.lessons > 0) days.add(a.date); });
+    const day = refDate ? new Date(refDate) : new Date();
+    let streak = 0, graceLeft = grace;
+    if (!days.has(todayKey(day))) day.setDate(day.getDate() - 1);
+    while (true) {
+      const d = todayKey(day);
+      if (days.has(d)) { streak += 1; day.setDate(day.getDate() - 1); }
+      else if (graceLeft > 0) { graceLeft -= 1; day.setDate(day.getDate() - 1); }
+      else break;
+    }
+    return streak;
   }
 
   window.CRO = window.CRO || {};
-  CRO.stats = { todayKey, isoWeekKey, weekTotals, streakState };
+  CRO.stats = { todayKey, isoWeekKey, weekTotals, streakState, personalStreak };
   if (typeof module !== 'undefined' && module.exports) module.exports = CRO.stats;
 })();

@@ -118,7 +118,9 @@
       streak: s.streak,
       todayComplete: s.todayComplete,
       youDone: s.doneToday.has(state.activeId),
-      partnerDone: state.profiles.length > 1 && partner ? s.doneToday.has(partner.id) : true
+      partnerDone: state.profiles.length > 1 && partner ? s.doneToday.has(partner.id) : true,
+      yourStreak: CRO.stats.personalStreak(acts, state.activeId),
+      partnerStreak: partner ? CRO.stats.personalStreak(acts, partner.id) : 0
     };
   }
 
@@ -248,14 +250,9 @@
         <hr>
         <label>Second learner <input id="p2name" placeholder="Name (optional)" maxlength="14"></label>
         <label class="check"><input type="checkbox" id="p2known"> already speaks some Croatian</label>
-        <hr>
-        <label>Household passphrase <input type="password" id="passA" autocomplete="new-password" placeholder="something you both remember"></label>
-        <label>Repeat it <input type="password" id="passB" autocomplete="new-password"></label>
-        <p class="hint bad-hint" id="passErr" style="display:none"></p>
         <button class="btn primary" id="startBtn">Počnimo! · Let's begin</button>
-        <p class="hint">The passphrase locks the app on every device and encrypts everything
-        that syncs between you. Each of you gets your own progress; the streak is shared —
-        it only grows on days you <em>both</em> practise.</p>
+        <p class="hint">Each of you gets your own progress. You can turn on a passphrase lock
+        and set up sync between devices later, in Settings.</p>
         <hr>
         <button class="btn ghost" id="connectBtn">${ic('refresh', 15)} Already set up on another device? Connect sync</button>
         <p class="hint">Set up profiles on one device first, connect sync there (Settings), then join
@@ -268,7 +265,9 @@
         <h3>${ic('refresh', 18)} Connect to your existing setup</h3>
         <div class="syncopt">
           <h4>GitHub sync <span class="hint-inline">— any device</span></h4>
-          <label class="modal-label">Household passphrase <input type="password" id="ob-pass" autocomplete="off"></label>
+          <label class="modal-label">Pairing code <input id="ob-paircode" placeholder="from your other device (Settings → Add another device)" autocomplete="off"></label>
+          <label class="modal-label">Shared passphrase <input type="password" id="ob-pass" autocomplete="off"></label>
+          <p class="hint">No pairing code? Enter the GitHub token + gist id from your first device instead.</p>
           <label class="modal-label">GitHub token <input id="ob-token" placeholder="ghp_…" autocomplete="off"></label>
           <label class="modal-label">Gist id <input id="ob-gist" placeholder="shown in Settings on the first device"></label>
           <button class="btn primary" id="ob-gconnect">Connect</button>
@@ -294,18 +293,17 @@
       }
       m.body.querySelector('#ob-gconnect').onclick = async () => {
         const pass = $('#ob-pass').value;
-        if (!pass) { toast('Enter the household passphrase.'); return; }
+        if (!pass) { toast('Enter the shared passphrase.'); return; }
         await CRO.db.setMeta('passphrase', pass); // needed to decrypt the remote data
-        const ok = await CRO.sync.setupGist($('#ob-token').value, $('#ob-gist').value);
-        if (ok) await CRO.vault.setPassphrase(pass); // adopt the lock locally too
+        const code = $('#ob-paircode').value.trim();
+        const ok = code ? await CRO.sync.connectWithCode(code) : await CRO.sync.setupGist($('#ob-token').value, $('#ob-gist').value);
         afterConnect(ok);
       };
       const fbtn = m.body.querySelector('#ob-fconnect');
       if (fbtn) fbtn.onclick = async () => {
         const pass = $('#ob-pass').value;
-        if (pass) await CRO.db.setMeta('passphrase', pass);
+        if (pass) await CRO.vault.setSyncPassphrase(pass); // decrypt/encrypt sync, no lock
         const ok = await CRO.sync.setup(false);
-        if (ok && pass) await CRO.vault.setPassphrase(pass);
         afterConnect(ok);
       };
     };
@@ -316,10 +314,6 @@
       });
       const n1 = $('#p1name').value.trim();
       if (!n1) { $('#p1name').focus(); return; }
-      const pa = $('#passA').value, pb = $('#passB').value, perr = $('#passErr');
-      if (pa.length < 4) { perr.textContent = 'Pick a passphrase of at least 4 characters.'; perr.style.display = 'block'; $('#passA').focus(); return; }
-      if (pa !== pb) { perr.textContent = 'The two passphrases don\'t match.'; perr.style.display = 'block'; $('#passB').focus(); return; }
-      await CRO.vault.setPassphrase(pa);
       const p1 = mk(n1, $('#p1known').checked, 205);
       await CRO.db.put('profiles', p1);
       state.profiles = [p1];
@@ -347,31 +341,46 @@
     const p = activeProfile();
     const partner = otherProfile();
 
-    // streak + head-to-head band
+    // streak band — leads with YOUR own streak (never hostage to your partner),
+    // with the shared "together" count as a smaller second line.
     const band = el('section', 'band');
-    const streakCls = sInfo.todayComplete ? 'flame lit' : 'flame';
+    const lit = sInfo.youDone; // your flame lights when YOU practise
     let streakNote;
-    if (sInfo.todayComplete) streakNote = 'Both done today — the flame is safe.';
-    else if (sInfo.youDone && partner) streakNote = `You're done — waiting on ${partner.name}.`;
-    else if (!sInfo.youDone && sInfo.partnerDone && partner) streakNote = `${partner.name} already practised today. Your move.`;
-    else streakNote = 'A lesson each keeps the shared flame alive.';
+    if (sInfo.youDone && sInfo.partnerDone && partner) streakNote = 'Both done today — nice.';
+    else if (sInfo.youDone && partner) streakNote = `You're done. ${partner.name} can pick it up whenever.`;
+    else if (!sInfo.youDone && sInfo.partnerDone && partner) streakNote = `${partner.name} went today — join when you get a minute.`;
+    else streakNote = 'A few minutes keeps it going.';
     band.innerHTML = `
       <div class="streakbox">
-        <span class="${streakCls}">${ic(sInfo.todayComplete ? 'flame' : 'flameDim', 30)}</span>
-        <div><div class="streak-n">${sInfo.streak}</div><div class="streak-lbl">shared streak</div></div>
+        <span class="${lit ? 'flame lit' : 'flame'}">${ic(lit ? 'flame' : 'flameDim', 30)}</span>
+        <div>
+          <div class="streak-n">${sInfo.yourStreak}</div>
+          <div class="streak-lbl">day streak${partner ? ` · ${sInfo.streak} together` : ''}</div>
+        </div>
         <p class="streak-note">${streakNote}</p>
       </div>`;
-    if (partner) {
+    const weeklyMode = state.settings.weeklyMode || 'together';
+    if (partner && weeklyMode !== 'off') {
       const a = scores[p.id] || 0, b = scores[partner.id] || 0;
-      const max = Math.max(a, b, 1);
-      const lead = a === b ? 'Dead heat this week.' : (a > b ? `${p.name} leads this week!` : `${partner.name} leads this week!`);
-      const h2h = el('div', 'h2h');
-      h2h.innerHTML = `
-        <div class="h2h-title">${ic('trophy', 16)} Tjedni dvoboj <span class="h2h-sub">· weekly duel</span></div>
-        <div class="h2h-row"><span class="h2h-name">${p.name}</span><div class="h2h-bar"><div style="width:${Math.round(a / max * 100)}%; background:hsl(${p.hue} 55% 52%)"></div></div><span class="h2h-xp">${a}</span></div>
-        <div class="h2h-row"><span class="h2h-name">${partner.name}</span><div class="h2h-bar"><div style="width:${Math.round(b / max * 100)}%; background:hsl(${partner.hue} 55% 52%)"></div></div><span class="h2h-xp">${b}</span></div>
-        <div class="h2h-lead">${lead}</div>`;
-      band.appendChild(h2h);
+      const wk = el('div', 'h2h');
+      if (weeklyMode === 'duel') {
+        const max = Math.max(a, b, 1);
+        const lead = a === b ? 'Dead heat this week.' : (a > b ? `${p.name} leads this week!` : `${partner.name} leads this week!`);
+        wk.innerHTML = `
+          <div class="h2h-title">${ic('trophy', 16)} Tjedni dvoboj <span class="h2h-sub">· weekly duel</span></div>
+          <div class="h2h-row"><span class="h2h-name">${p.name}</span><div class="h2h-bar"><div style="width:${Math.round(a / max * 100)}%; background:hsl(${p.hue} 55% 52%)"></div></div><span class="h2h-xp">${a}</span></div>
+          <div class="h2h-row"><span class="h2h-name">${partner.name}</span><div class="h2h-bar"><div style="width:${Math.round(b / max * 100)}%; background:hsl(${partner.hue} 55% 52%)"></div></div><span class="h2h-xp">${b}</span></div>
+          <div class="h2h-lead">${lead}</div>`;
+      } else {
+        // 'together' — one combined total this week, both contributions stacked
+        const total = a + b;
+        const aw = total ? Math.round(a / total * 100) : 50;
+        wk.innerHTML = `
+          <div class="h2h-title">${ic('trophy', 16)} Ovaj tjedan zajedno <span class="h2h-sub">· together this week</span></div>
+          <div class="h2h-bar wide"><div style="width:${aw}%; background:hsl(${p.hue} 55% 52%)"></div><div style="width:${100 - aw}%; background:hsl(${partner.hue} 55% 52%)"></div></div>
+          <div class="h2h-lead">${total} XP together — ${p.name} ${a}, ${partner.name} ${b}</div>`;
+      }
+      band.appendChild(wk);
     }
     main.appendChild(band);
 
@@ -712,18 +721,21 @@
           <option value="0.93" ${state.settings.retention === 0.93 ? 'selected' : ''}>strict — more reviews (93%)</option>
         </select></label>
       <label class="check"><input type="checkbox" id="s-var" ${state.settings.showVariety ? 'checked' : ''}> show family-variety chips in lessons</label>
+      <label>This week
+        <select id="s-weekly">
+          ${[['together', 'together — one combined total'], ['duel', 'duel — head to head'], ['off', 'off — hide it']].map(([v, t]) => `<option value="${v}" ${(state.settings.weeklyMode || 'together') === v ? 'selected' : ''}>${t}</option>`).join('')}
+        </select></label>
       <p class="hint">${ic(audioOk ? 'speaker' : 'speakerOff', 14)} ${audioOk ? 'Croatian voice: ' + CRO.audio.voiceLabel() : 'No Croatian voice found. On Windows, add one under Settings → Time & Language → Speech → Add voices → Croatian; Chrome also ships a Google hrvatski voice when online.'}</p>
       <hr>
-      <h3 class="settings-h">${ic('gear', 16)} Household passphrase</h3>
+      <h3 class="settings-h">${ic('gear', 16)} App lock <span class="hint-inline">— optional, off by default</span></h3>
       <p class="hint" id="s-lockstatus"></p>
       <div class="row">
-        <input type="password" id="s-pass" placeholder="new passphrase" style="flex:1">
-        <button class="btn ghost small" id="s-setpass">Set</button>
-        <button class="btn ghost small" id="s-locknow">Lock now</button>
+        <input type="password" id="s-pass" placeholder="passphrase" style="flex:1">
+        <button class="btn ghost small" id="s-locktoggle">Turn on</button>
+        <button class="btn ghost small" id="s-locknow" style="display:none">Lock now</button>
       </div>
-      <p class="hint">Locks the app on this device and end-to-end encrypts everything that syncs.
-      Use the same passphrase on every device. If you change it, change it everywhere and run
-      “Sync now” from this device first.</p>
+      <p class="hint">When on, this passphrase is asked each time the app opens on this device.
+      The same passphrase also encrypts your sync, so use the same one on both devices.</p>
       <hr>
       <h3 class="settings-h">${ic('refresh', 16)} Sync between devices</h3>
       <p class="hint" id="s-syncstatus"></p>
@@ -737,23 +749,33 @@
       <input type="file" id="s-file" accept=".json" style="display:none">`;
     main.appendChild(card);
 
-    // passphrase section wiring
-    (async () => {
-      $('#s-lockstatus').textContent = (await CRO.vault.hasLock())
-        ? 'A passphrase is set on this device.'
-        : 'No passphrase yet — set one to lock the app and encrypt sync.';
-    })();
-    $('#s-setpass').onclick = async () => {
-      const p = $('#s-pass').value;
-      if (p.length < 4) { toast('At least 4 characters.'); return; }
-      await CRO.vault.setPassphrase(p);
-      $('#s-pass').value = '';
-      $('#s-lockstatus').textContent = 'A passphrase is set on this device.';
-      CRO.sync.syncNow('rekey'); // re-encrypt the remote copy under the new key
-      toast('Passphrase set — synced data is now encrypted with it.');
+    // app-lock section wiring
+    async function refreshLockUI() {
+      const on = await CRO.vault.hasLock();
+      $('#s-lockstatus').textContent = on
+        ? 'The lock is on — this device asks for the passphrase on open.'
+        : 'The lock is off. The app opens straight away on this device.';
+      $('#s-locktoggle').textContent = on ? 'Turn off' : 'Turn on';
+      $('#s-locknow').style.display = on ? '' : 'none';
+      $('#s-pass').style.display = on ? 'none' : '';
+    }
+    refreshLockUI();
+    $('#s-locktoggle').onclick = async () => {
+      if (await CRO.vault.hasLock()) {
+        await CRO.vault.disableLock();
+        toast('Lock turned off. Sync still works.');
+      } else {
+        const p = $('#s-pass').value;
+        if (p.length < 4) { toast('Pick a passphrase of at least 4 characters.'); return; }
+        await CRO.vault.enableLock(p);
+        $('#s-pass').value = '';
+        CRO.sync.syncNow('rekey'); // re-encrypt the remote copy under this passphrase
+        toast('Lock on. Use the same passphrase on your other device.');
+      }
+      refreshLockUI();
     };
     $('#s-locknow').onclick = async () => {
-      if (!(await CRO.vault.hasLock())) { toast('Set a passphrase first.'); return; }
+      if (!(await CRO.vault.hasLock())) return;
       await CRO.vault.lockNow();
       location.reload();
     };
@@ -781,9 +803,23 @@
         else row.appendChild(mk('Sync now', () => CRO.sync.syncNow('manual'), true));
         row.appendChild(mk('Disconnect', () => CRO.sync.disconnect()));
         body.appendChild(row);
-        const g = CRO.sync.gistInfo();
-        if (g) {
-          body.appendChild(el('p', 'hint', `To connect another device, enter the same token there with gist id: <b>${esc(g.id)}</b>`));
+        const code = CRO.sync.pairingCode && CRO.sync.pairingCode();
+        if (code) {
+          const addBox = el('div', 'syncopt');
+          addBox.innerHTML = `
+            <h4>${ic('refresh', 14)} Add another device</h4>
+            <p class="hint">On your other phone, open “Connect sync”, paste this code, and enter your shared passphrase.
+            The code carries your GitHub token, so only paste it on your own devices.</p>
+            <div class="row"><input class="paircode" readonly value="${esc(code)}" style="flex:1"></div>`;
+          body.appendChild(addBox);
+          const inp = addBox.querySelector('.paircode');
+          inp.onclick = () => inp.select();
+          const copy = el('button', 'btn ghost small', `${ic('download', 13)} Copy code`);
+          copy.onclick = async () => {
+            try { await navigator.clipboard.writeText(code); toast('Copied.'); }
+            catch (e) { inp.select(); toast('Select all and copy.'); }
+          };
+          addBox.querySelector('.row').appendChild(copy);
         }
         return;
       }
@@ -792,16 +828,21 @@
       const gistBox = el('div', 'syncopt');
       gistBox.innerHTML = `
         <h4>${ic('bolt', 14)} GitHub sync <span class="hint-inline">— recommended: works on PC, Mac, Android and iPhone</span></h4>
-        <p class="hint">Make one free GitHub account for the two of you. Create a token at
-        <b>github.com/settings/tokens</b> (classic token, only the <b>gist</b> scope, no expiry).
-        Enter it on every device; leave the gist id empty on the first device — the app creates a
-        private gist and shows you the id to use on the others.</p>
-        <label>GitHub token <input id="g-token" placeholder="ghp_…" autocomplete="off"></label>
+        <p class="hint">If your other device is already syncing, just paste its <b>pairing code</b>
+        (Settings → Add another device) — that's all you need here. Setting up the first device:
+        make one free GitHub account, create a token at <b>github.com/settings/tokens</b> (classic,
+        only the <b>gist</b> scope, no expiry), and leave the gist id empty.</p>
+        <label>Pairing code <span class="hint-inline">from your other device</span> <input id="g-paircode" placeholder="paste to join an existing setup" autocomplete="off"></label>
+        <label>Shared passphrase <input type="password" id="g-pass" placeholder="encrypts your synced data" autocomplete="off"></label>
+        <label>GitHub token <input id="g-token" placeholder="ghp_… (first device)" autocomplete="off"></label>
         <label>Gist id (empty on first device) <input id="g-id" placeholder="e.g. 9f2c4a…"></label>
         <button class="btn primary small" id="g-connect">Connect GitHub sync</button>`;
       body.appendChild(gistBox);
       gistBox.querySelector('#g-connect').onclick = async () => {
-        const ok = await CRO.sync.setupGist($('#g-token').value, $('#g-id').value);
+        const pass = $('#g-pass').value;
+        if (pass) await CRO.vault.setSyncPassphrase(pass); // encrypt sync without turning on the lock
+        const code = $('#g-paircode').value.trim();
+        const ok = code ? await CRO.sync.connectWithCode(code) : await CRO.sync.setupGist($('#g-token').value, $('#g-id').value);
         if (ok) { toast('GitHub sync connected.'); state.profiles = await CRO.db.getAll('profiles'); await loadProfileSrs(); }
         else toast(CRO.sync.status.error || 'Could not connect.');
         renderSyncRow();
@@ -822,11 +863,13 @@
     }
     renderSyncRow();
 
-    $('#s-new').onchange = saveSettings; $('#s-ret').onchange = saveSettings; $('#s-var').onchange = saveSettings;
+    $('#s-new').onchange = saveSettings; $('#s-ret').onchange = saveSettings;
+    $('#s-var').onchange = saveSettings; $('#s-weekly').onchange = saveSettings;
     async function saveSettings() {
       state.settings.newPerLesson = parseInt($('#s-new').value, 10);
       state.settings.retention = parseFloat($('#s-ret').value);
       state.settings.showVariety = $('#s-var').checked;
+      state.settings.weeklyMode = $('#s-weekly').value;
       await CRO.db.setMeta('settings', state.settings);
       toast('Saved.');
     }

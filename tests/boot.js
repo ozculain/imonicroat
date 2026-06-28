@@ -56,7 +56,6 @@ function makeDom(beforeParseExtra) {
 async function onboard(ctx) {
   await ctx.waitFor('#p1name');
   ctx.q('#p1name').value = 'Imo'; ctx.q('#p2name').value = 'Nicro';
-  ctx.q('#passA').value = 'test1234'; ctx.q('#passB').value = 'test1234';
   ctx.q('#startBtn').click();
   await ctx.waitFor('#startLesson');
 }
@@ -91,6 +90,8 @@ async function scenarioGist() {
 
   await onboard(ctx);
   check('A: onboarding creates two profiles', win.CRO.app.state.profiles.length === 2);
+  check('C: onboarding sets no lock by default', (await win.CRO.vault.hasLock()) === false);
+  await win.CRO.vault.setSyncPassphrase('test1234'); // encrypt sync without enabling the lock
   q('#startLesson').click(); await sleep(60);
   check('A: lesson session started', !!win.CRO.app.state.session);
   for (let i = 0; i < 200; i++) {
@@ -121,11 +122,22 @@ async function scenarioGist() {
   await p;
   check('A: H1 — write during in-flight sync survives the commit', !!(await win.CRO.db.get('srs', probe)));
 
+  // D: the connected device produces a valid one-paste pairing code
+  const pcode = win.CRO.sync.pairingCode();
+  check('D: pairing code round-trips', !!pcode && !!win.CRO.sync._parsePairing(pcode));
+
+  // C: the lock is an off-by-default toggle, separate from the sync passphrase
+  await win.CRO.vault.enableLock('test1234');
+  check('C: enabling the lock turns it on', (await win.CRO.vault.hasLock()) === true);
+  await win.CRO.vault.disableLock();
+  check('C: disabling keeps sync working (passphrase retained)',
+    (await win.CRO.vault.hasLock()) === false && (await win.CRO.vault.getPassphrase()) === 'test1234');
+
   win.CRO.app.render('variety'); await sleep(30);
   if (q('#v-hr')) { q('#v-hr').value = 'fjaka'; q('#v-en').value = 'idle bliss'; q('#v-add').click(); await sleep(40); }
   check('A: variety entry added (stamp→clock)', (await win.CRO.db.getAll('variety')).filter(v => !v.deleted).length >= 1);
   win.CRO.app.render('settings'); await sleep(40);
-  check('A: settings screen renders', !!q('#s-export') && !!q('#s-setpass'));
+  check('A: settings screen renders', !!q('#s-export') && !!q('#s-locktoggle') && !!q('#s-weekly'));
   win.CRO.app.render('review'); await sleep(30);
   check('A: review screen renders', q('main.review') != null);
 
@@ -161,6 +173,7 @@ async function scenarioFile() {
   });
   const { win, errors } = ctx;
   await onboard(ctx);
+  await win.CRO.vault.setSyncPassphrase('test1234');
 
   check('B: file transport supported (pickers present)', win.CRO.sync.status.supported === true);
   const ok = await win.CRO.sync.setup(true);      // create file + first sync
