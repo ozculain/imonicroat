@@ -47,7 +47,12 @@ body::before {
                     repeating-linear-gradient(90deg, rgba(33,50,62,.011) 0 1px, transparent 1px 3px);
 }
 
-#app { position: relative; z-index: 1; max-width: 680px; margin: 0 auto; padding: 0 18px 60px; }
+#app {
+  position: relative; z-index: 1; max-width: 680px; margin: 0 auto;
+  padding: 0 18px 60px;
+  /* keep clear of the iPhone notch / home indicator when installed */
+  padding: env(safe-area-inset-top) calc(18px + env(safe-area-inset-right)) calc(60px + env(safe-area-inset-bottom)) calc(18px + env(safe-area-inset-left));
+}
 
 h1, h2, h3, .brand-name, .intro-hr, .ex-big, .streak-n, .notes-hr {
   font-family: var(--serif);
@@ -376,6 +381,7 @@ input.typed:focus { border-color: var(--accent-blue); }
   border: 1.5px solid var(--line); border-radius: 9px; background: var(--paper); outline: none;
 }
 .syncopt input:focus { border-color: var(--accent-blue); }
+.modal-label { font-size: 12.5px; color: var(--ink-soft); display: flex; flex-direction: column; gap: 4px; }
 
 /* ---------- teaching screens ---------- */
 .teachcard { border-left: 4px solid var(--accent-blue); }
@@ -396,6 +402,11 @@ input.typed:focus { border-color: var(--accent-blue); }
 .gloss b { display: block; font-family: var(--serif); font-size: 14.5px; color: var(--ink); font-weight: 600; }
 .unit-coming { font-size: 13px; color: var(--ink-soft); margin-top: 12px; line-height: 1.8; }
 .unit-coming b { color: var(--accent-blue); font-weight: 600; }
+
+/* speak-aloud reps + grammar paragraphs */
+.speak-answer { margin-top: 16px; }
+.speak-grade { margin-top: 14px; }
+.teach-body p + p, .notes-gram p + p { margin-top: 8px; }
 
 /* ---------- recap & lock ---------- */
 .recap { text-align: left; background: var(--paper); border: 1px solid var(--line); border-radius: 11px; padding: 12px 15px; margin: 4px 0 14px; }
@@ -453,6 +464,20 @@ input.typed:focus { border-color: var(--accent-blue); }
 }
 textarea { width: 100%; resize: vertical; }
 
+/* ---------- say-it mission ---------- */
+.mission {
+  margin: 14px 0 18px; border-left: 4px solid var(--leaf);
+  display: flex; flex-direction: column; gap: 6px; text-align: left;
+}
+.mission-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--leaf); font-weight: 700;
+}
+.mission-hr { font-family: var(--serif); font-size: 22px; }
+.mission-en { font-size: 13.5px; color: var(--ink-soft); }
+.mission .mission-btn { align-self: flex-start; margin-top: 4px; }
+.mission-done { color: var(--good); font-size: 13.5px; font-weight: 600; }
+
 /* ---------- toast ---------- */
 .toast {
   position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 16px); z-index: 99;
@@ -460,6 +485,13 @@ textarea { width: 100%; resize: vertical; }
   font-size: 14px; opacity: 0; transition: opacity .25s, transform .25s; box-shadow: var(--shadow);
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+@supports (bottom: env(safe-area-inset-bottom)) {
+  .toast { bottom: calc(26px + env(safe-area-inset-bottom)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
 
 @media (max-width: 540px) {
   .editgrid { grid-template-columns: 1fr; }

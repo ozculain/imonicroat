@@ -52,10 +52,17 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
    * diacriticsOnly = right word, wrong/missing diacritics → counts as correct
    * with a gentle nudge (Duolingo-style "watch the accents").
    */
-  function checkTyped(answer, accepted) {
+  function checkTyped(answer, accepted, altForms) {
     const a = norm(answer);
     for (const exp of accepted) {
       if (a === norm(exp)) return { ok: true, exact: true, diacriticsOnly: false, expected: exp };
+    }
+    // the couple's own register: a listed Dalmatian form is full credit —
+    // never an error — with the standard form echoed back for reinforcement
+    for (const alt of (altForms || [])) {
+      if (a === norm(alt) || stripDiacritics(a) === stripDiacritics(norm(alt))) {
+        return { ok: true, exact: false, diacriticsOnly: false, dalmatian: true, expected: accepted[0] };
+      }
     }
     for (const exp of accepted) {
       if (stripDiacritics(a) === stripDiacritics(norm(exp))) {
@@ -117,6 +124,14 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return R.Good;
   }
 
+  // Multiple-choice speed is noise — a lucky 1-in-4 tap must not read as
+  // mastery. Recognition exercises cap at Good; only typed/spoken answers
+  // can earn Easy.
+  function ratingCapped(res, ms) {
+    const r = ratingFromResult(res, ms);
+    return r === CRO.srs.Rating.Easy ? CRO.srs.Rating.Good : r;
+  }
+
   function wordChoices(word, n, sameUnitFirst) {
     const all = CRO.content.WORDS;
     const sameUnit = all.filter(w => w.unit === word.unit && w.id !== word.id);
@@ -143,6 +158,11 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     return { type: 'intro', cardId: 'w:' + word.id, word };
   }
 
+  /** Dalmatian alternates for a word (word.dal may hold 'x' or 'x / y'). */
+  function dalForms(word) {
+    return word && word.dal ? String(word.dal).split(' / ').map(s => s.trim()).filter(Boolean) : [];
+  }
+
   /** Multiple choice HR→EN or EN→HR. */
   function exChoice(word, dir) {
     const distract = wordChoices(word, 3, true);
@@ -153,24 +173,25 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
         const ok = options[idx] && options[idx].id === word.id;
         return { ok, expected: dir === 'hr2en' ? word.en : word.hr, chosen: idx };
       },
-      rating: ratingFromResult
+      rating: ratingCapped
     };
   }
 
-  /** Listening: hear Croatian, choose (or type) what you heard. */
-  function exListen(word, typed) {
+  /** Listening: hear Croatian, choose (or type) what you heard.
+      rate (optional) sets the playback speed — mature cards hear it faster. */
+  function exListen(word, typed, rate) {
     const distract = wordChoices(word, 3, true);
     const options = shuffle([word].concat(distract));
     return {
       type: typed ? 'listenType' : 'listenChoice',
       cardId: 'w:' + word.id, word, options: typed ? null : options,
-      audioText: word.hr.split(' / ')[0],
+      audioText: word.hr.split(' / ')[0], rate,
       check(ans) {
-        if (typed) return checkTyped(ans, [word.hr.split(' / ')[0]]);
+        if (typed) return checkTyped(ans, [word.hr.split(' / ')[0]], dalForms(word));
         const ok = options[ans] && options[ans].id === word.id;
         return { ok, expected: word.hr };
       },
-      rating: ratingFromResult
+      rating: typed ? ratingFromResult : ratingCapped
     };
   }
 
@@ -204,7 +225,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
         const ok = options[idx] && options[idx].id === sent.id;
         return { ok, expected: sent.en };
       },
-      rating: ratingFromResult
+      rating: ratingCapped
     };
   }
 
@@ -256,7 +277,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
         const ok = norm(options[idx] || '') === norm(target);
         return { ok, expected: target };
       },
-      rating: ratingFromResult
+      rating: ratingCapped
     };
   }
 
@@ -267,6 +288,105 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
       type: 'produce', cardId: 's:' + sent.id, sent,
       check(ans) { return checkTyped(ans, accepted); },
       rating: ratingFromResult
+    };
+  }
+
+  /* ---------------- "ours" cards (family-variety entries) ---------------- */
+  // A variety entry with both Croatian and a meaning is a real card
+  // (cardId 'v:'+id). Options are shaped word-like ({hr, en}) so the app's
+  // existing choice/typed renderers work unchanged.
+  function varietyDistractors(entry, pool, n) {
+    const seen = new Set([norm(entry.en)]);
+    const out = [];
+    for (const c of shuffle(pool)) {
+      if (out.length >= n) break;
+      if (c.id === entry.id || !c.en || !c.hr) continue;
+      if (seen.has(norm(c.en))) continue;
+      seen.add(norm(c.en));
+      out.push({ id: c.id, hr: c.hr, en: c.en });
+    }
+    return out;
+  }
+
+  function exVarietyChoice(entry, dir, pool) {
+    const self = { id: entry.id, hr: entry.hr, en: entry.en };
+    const options = shuffle([self].concat(varietyDistractors(entry, pool, 3)));
+    return {
+      type: 'choice', dir, cardId: 'v:' + entry.id, word: self, options,
+      check(idx) {
+        const ok = options[idx] && options[idx].id === entry.id;
+        return { ok, expected: dir === 'hr2en' ? entry.en : entry.hr, chosen: idx };
+      },
+      rating: ratingCapped
+    };
+  }
+
+  function exVarietyType(entry) {
+    return {
+      type: 'produce', cardId: 'v:' + entry.id,
+      sent: { hr: entry.hr, en: entry.en },
+      audioText: entry.hr,
+      check(ans) { return checkTyped(ans, [entry.hr]); },
+      rating: ratingFromResult
+    };
+  }
+
+  /** Exercise ladder for an ours-card, mirroring words: recognise → both
+      directions → type it. pool = other candidates for distractors. */
+  function exerciseForVariety(entry, maturityBucket, hasAudio, pool) {
+    if (!entry || !entry.hr || !entry.en) return null;
+    pool = pool || [];
+    const r = rng();
+    if (maturityBucket === 'new') return exVarietyChoice(entry, 'hr2en', pool);
+    if (maturityBucket === 'learning') return exVarietyChoice(entry, r < 0.5 ? 'hr2en' : 'en2hr', pool);
+    if (maturityBucket === 'young' && r < 0.5) return exVarietyChoice(entry, 'en2hr', pool);
+    return exVarietyType(entry);
+  }
+
+  /* ---------------- numbers & prices (trip comprehension drill) ---------------- */
+  const NUM_UNITS = ['', 'jedan', 'dva', 'tri', 'četiri', 'pet', 'šest', 'sedam', 'osam', 'devet'];
+  const NUM_TEENS = ['deset', 'jedanaest', 'dvanaest', 'trinaest', 'četrnaest', 'petnaest', 'šesnaest', 'sedamnaest', 'osamnaest', 'devetnaest'];
+  const NUM_TENS = ['', '', 'dvadeset', 'trideset', 'četrdeset', 'pedeset', 'šezdeset', 'sedamdeset', 'osamdeset', 'devedeset'];
+
+  /** Spoken Croatian for 1–100 ("dvadeset pet"). */
+  function numberToCroatian(n) {
+    if (n === 100) return 'sto';
+    if (n < 10) return NUM_UNITS[n];
+    if (n < 20) return NUM_TEENS[n - 10];
+    const t = Math.floor(n / 10), u = n % 10;
+    return u ? NUM_TENS[t] + ' ' + NUM_UNITS[u] : NUM_TENS[t];
+  }
+
+  /** "dvadeset jedan euro" / "trideset pet eura" — ends-in-jedan takes the singular. */
+  function priceText(n) {
+    return numberToCroatian(n) + ((n % 10 === 1 && n % 100 !== 11) ? ' euro' : ' eura');
+  }
+
+  /** Speak-aloud rep: see the English, say the Croatian out loud, reveal,
+      self-grade. No typing — the trip needs a mouth, and at two known users
+      honesty is a fine grader (it's how Anki has always worked). */
+  function exSpeak(cardId, item) {
+    return {
+      type: 'speak', cardId, item,
+      audioText: (item.hr || '').split(' / ')[0],
+      check(saidIt) {
+        return { ok: !!saidIt, selfGraded: true, expected: item.hr };
+      },
+      rating(res) { return res.ok ? CRO.srs.Rating.Good : CRO.srs.Rating.Again; }
+    };
+  }
+
+  /** Listening drill: hear a price, type the number. Not an SRS card — a skill
+      rep for the market/café moment; XP only. */
+  function exPriceListen() {
+    const n = 1 + Math.floor(rng() * 100); // 1–100
+    return {
+      type: 'priceListen', cardId: null, n,
+      audioText: priceText(n),
+      check(ans) {
+        const ok = String(ans == null ? '' : ans).trim() === String(n);
+        return { ok, expected: n + ' — ' + priceText(n) };
+      }
     };
   }
 
@@ -296,7 +416,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
         return exChoice(item, 'en2hr');
       }
       // mature
-      if (hasAudio && r < 0.4) return exListen(item, true);
+      if (hasAudio && r < 0.4) return exListen(item, true, 1.0); // mature ears get natural speed
       return exChoice(item, 'en2hr'); // typed word entry handled via listenType; choice keeps pace brisk
     }
 
@@ -325,7 +445,8 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     letters, stripDiacritics, norm, checkTyped, editDistance,
     reseed, shuffle, pick,
     exIntro, exChoice, exListen, exPairs, exSentence, exTiles, exGap, exProduce,
-    exerciseFor, ratingFromResult,
+    exerciseFor, exerciseForVariety, ratingFromResult, ratingCapped, _dalForms: dalForms,
+    numberToCroatian, priceText, exPriceListen, exSpeak,
     SPECIAL_KEYS: ['č', 'ć', 'š', 'ž', 'đ']
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = CRO.ex;

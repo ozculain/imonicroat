@@ -604,6 +604,126 @@ const swTests = (async () => {
   t('sw: cross-origin passes through', fetchEvent('https://api.github.com/gists/x') === undefined);
 });
 
+/* ================= ours cards & Dalmatian answers ================= */
+console.log('Ours cards & Dalmatian answers');
+{
+  // a listed Dalmatian alternate is full credit, standard echoed back
+  const dal = ex.checkTyped('mliko', ['mlijeko'], ['mliko']);
+  t('dal: alternate accepted as correct', dal.ok === true && dal.dalmatian === true);
+  t('dal: expected echoes the standard form', dal.expected === 'mlijeko');
+  t('dal: accepted without diacritics too', ex.checkTyped('zelin', ['želim'], ['želin']).dalmatian === true);
+  t('dal: rated Good/Easy, never Hard', ex.ratingFromResult(dal, 20000) === srs.Rating.Good);
+  t('dal: exact standard answer unchanged', ex.checkTyped('mlijeko', ['mlijeko'], ['mliko']).exact === true);
+  t('dal: typo tolerance unchanged', ex.checkTyped('kupujemx', ['kupujem']).typo === true);
+  t('dal: wrong answer still wrong', ex.checkTyped('vino', ['mlijeko'], ['mliko']).ok === false);
+
+  // wired into the course: every word carrying a dal form accepts it when typed
+  const dalWords = content.WORDS.filter(w => w.dal);
+  t('course carries dal forms to guard', dalWords.length >= 20, String(dalWords.length));
+  ex.reseed(9);
+  let dalOk = true, dalWhy = '';
+  for (const w of dalWords) {
+    for (const form of ex._dalForms(w)) {
+      const r = ex.exListen(w, true).check(form);
+      if (!(r.ok && r.dalmatian)) { dalOk = false; dalWhy = w.id + ' "' + form + '"'; }
+    }
+  }
+  t('dal: every course dal form is accepted in typed listening', dalOk, dalWhy);
+
+  // ours-cards: ladder + distractor rules
+  const entry = { id: 'v1', hr: 'šugaman', en: 'towel' };
+  const pool = [
+    { id: 'v2', hr: 'fjaka', en: 'sweet idleness' },
+    { id: 'v3', hr: 'pjat', en: 'plate' },
+    { id: 'v4', hr: 'katriga', en: 'chair' },
+    { id: 'v5', hr: 'ručnik', en: 'towel' },  // same meaning — must be excluded
+    { id: 'v6', hr: '', en: 'broken' }        // incomplete — must be excluded
+  ];
+  ex.reseed(21);
+  const eNew = ex.exerciseForVariety(entry, 'new', false, pool);
+  t('ours: new → hr2en recognition', !!eNew && eNew.type === 'choice' && eNew.dir === 'hr2en' && eNew.cardId === 'v:v1');
+  const hit = eNew.options.findIndex(o => o.id === 'v1');
+  t('ours: options contain the answer; check() consistent',
+    hit >= 0 && eNew.check(hit).ok && !eNew.check((hit + 1) % eNew.options.length).ok);
+  t('ours: distractors skip same-meaning and incomplete entries',
+    !eNew.options.some(o => o.id === 'v5' || o.id === 'v6'));
+  const eMat = ex.exerciseForVariety(entry, 'mature', false, pool);
+  t('ours: mature → typed production, diacritics tolerant',
+    eMat.type === 'produce' && eMat.check('šugaman').ok && eMat.check('sugaman').diacriticsOnly === true);
+  t('ours: learning stays recognition', ex.exerciseForVariety(entry, 'learning', false, pool).type === 'choice');
+  t('ours: no meaning → no exercise', ex.exerciseForVariety({ id: 'x', hr: 'x', en: '' }, 'new', false, pool) === null);
+  t('ours: young mixes recognition and typing across seeds', (() => {
+    const kinds = new Set();
+    for (let s = 1; s <= 30; s++) { ex.reseed(s); kinds.add(ex.exerciseForVariety(entry, 'young', false, pool).type); }
+    return kinds.has('choice') && kinds.has('produce');
+  })());
+}
+
+/* ================= numbers & prices ================= */
+console.log('Numbers & prices');
+{
+  const n2c = ex.numberToCroatian;
+  const table = {
+    1: 'jedan', 7: 'sedam', 10: 'deset', 11: 'jedanaest', 14: 'četrnaest', 16: 'šesnaest',
+    19: 'devetnaest', 20: 'dvadeset', 21: 'dvadeset jedan', 35: 'trideset pet', 44: 'četrdeset četiri',
+    58: 'pedeset osam', 67: 'šezdeset sedam', 79: 'sedamdeset devet', 83: 'osamdeset tri',
+    96: 'devedeset šest', 100: 'sto'
+  };
+  let numBad = '';
+  for (const [n, s] of Object.entries(table)) if (n2c(Number(n)) !== s) numBad = n + '→' + n2c(Number(n));
+  t('numberToCroatian matches the reference table', numBad === '', numBad);
+  t('euro form: ends in jedan → euro', ex.priceText(21) === 'dvadeset jedan euro' && ex.priceText(1) === 'jedan euro');
+  t('euro form: 11 and the rest → eura',
+    ex.priceText(11) === 'jedanaest eura' && ex.priceText(35) === 'trideset pet eura' && ex.priceText(100) === 'sto eura');
+
+  ex.reseed(31);
+  const d = ex.exPriceListen();
+  t('price drill: right digits accepted (whitespace tolerant)',
+    d.type === 'priceListen' && d.cardId === null && d.check(String(d.n)).ok && d.check(' ' + d.n + ' ').ok);
+  t('price drill: wrong number rejected', !d.check(String(d.n === 100 ? 2 : d.n + 1)).ok && !d.check('').ok);
+  t('price drill: audio text is the spoken price', d.audioText === ex.priceText(d.n));
+  let inRange = true;
+  for (let s = 1; s <= 60; s++) { ex.reseed(s); const e = ex.exPriceListen(); if (!(e.n >= 1 && e.n <= 100)) inRange = false; }
+  t('price drill: n stays in 1–100 across seeds', inRange);
+
+  const tens = ['dvadeset', 'trideset', 'cetrdeset', 'pedeset', 'sezdeset', 'sedamdeset', 'osamdeset', 'devedeset', 'sto-num'];
+  t('tens are taught as unit-6 words', tens.every(id => content.wordById[id] && content.wordById[id].unit === 6));
+
+  // release hygiene: the shell must be freshly stamped and carry its safety hooks
+  const fs = require('fs');
+  const idx = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  t('index.html carries the boot-error hook', idx.includes('unhandledrejection'));
+  t('index.html uses viewport-fit=cover', idx.includes('viewport-fit=cover'));
+  const stampMod = require(path.join(__dirname, '..', 'scripts', 'stamp-sw.js'));
+  const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
+  t('sw.js VERSION is freshly stamped (run scripts/stamp-sw.js)', swSrc.includes("'" + stampMod.computeVersion() + "'"));
+}
+
+/* ================= speak reps & rating cap ================= */
+console.log('Speak reps & rating cap');
+{
+  const R = srs.Rating;
+  const word = content.WORDS[0];
+  const sp = ex.exSpeak('w:' + word.id, word);
+  t('speak: said-it grades ok + selfGraded', sp.check(true).ok === true && sp.check(true).selfGraded === true);
+  t('speak: a stumble is not ok', sp.check(false).ok === false && sp.check(false).selfGraded === true);
+  t('speak: ratings map Good/Again', sp.rating(sp.check(true)) === R.Good && sp.rating(sp.check(false)) === R.Again);
+  t('speak: audio text uses the first hr variant', sp.audioText === word.hr.split(' / ')[0]);
+
+  // recognition never rates Easy; typed/spoken answers still can
+  ex.reseed(17);
+  const ch = ex.exChoice(word, 'hr2en');
+  const rightIdx = ch.options.findIndex(o => o.id === word.id);
+  t('cap: a fast correct choice rates Good, not Easy', ch.rating(ch.check(rightIdx), 800) === R.Good);
+  const lt = ex.exListen(word, true);
+  t('cap: fast correct typed listening still rates Easy', lt.rating(lt.check(word.hr.split(' / ')[0]), 800) === R.Easy);
+  const g = ex.exGap(content.SENTENCES[0]);
+  const gIdx = g.options.findIndex(o => ex.norm(o) === ex.norm(g.target));
+  t('cap: gap-fill capped at Good', g.rating(g.check(gIdx), 800) === R.Good);
+  t('cap: wrong answers still rate Again', ch.rating(ch.check((rightIdx + 1) % 4), 800) === R.Again);
+  t('rate: mature listening carries natural speed', ex.exListen(word, true, 1.0).rate === 1.0);
+}
+
 /* ================= db import (merge vs replace) + export hygiene ================= */
 const dbTests = (async () => {
   console.log('DB import/replace');
@@ -658,6 +778,15 @@ const dbTests = (async () => {
   t('M3: activity (no clk) keeps the higher xp', mw({ key: 'a', xp: 80 }, { key: 'a', xp: 50 }, 'activity') === true
     && mw({ key: 'a', xp: 40 }, { key: 'a', xp: 50 }, 'activity') === false);
   t('M3: equal clk keeps IDB (no needless write)', mw({ id: 'x', clk: 5 }, { id: 'x', clk: 5 }, 'flags') === false);
+
+  // Restore validation helper: the UI refuses truncated backups up front;
+  // importAll itself stays lenient (partial replace is a valid db operation)
+  const fullDump = await db.exportAll();
+  t('missingStores: full export is complete', db.missingStores(fullDump).length === 0);
+  t('missingStores: truncated dump names what is absent',
+    JSON.stringify(db.missingStores({ app: 'imonicroat', flags: [] }).slice(0, 2)) === JSON.stringify(['profiles', 'srs']));
+  t('missingStores: non-backup object counts every record store', db.missingStores({}).length === 6);
+  // and partial replace at the db layer still works (the tested contract above)
 });
 
 /* ================= clock: atomic under concurrency (M1) ================= */

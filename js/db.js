@@ -21,7 +21,6 @@
   let dbInstance = null;    // the open IDB connection, once available
   let opening = null;       // in-flight open() promise
   let useFallback = false;  // currently serving from localStorage
-  let lsDirty = false;      // localStorage holds writes not yet migrated to IDB
 
   function open() {
     if (dbInstance) return Promise.resolve(dbInstance);
@@ -36,7 +35,10 @@
         if (!settled) { settled = true; resolve(db); }
         // adopt any localStorage-buffered data — this session's fallback writes
         // OR a prior session that fell back — without clobbering fresh IDB writes
-        migrateLS(db).catch(() => { /* migration is best-effort */ });
+        migrateLS(db).catch(e => {
+          // best-effort: the buffer stays in localStorage and is retried next open
+          if (typeof console !== 'undefined') console.warn('localStorage→IndexedDB migration failed; will retry next open', e);
+        });
       };
       // Some environments (notably file:// in locked-down browsers) leave the
       // open request pending. Fall back to localStorage after 5s, but DON'T
@@ -103,7 +105,6 @@
 
   async function migrateLS(db) {
     useFallback = false;
-    lsDirty = false;
     let buffered = false;
     try { buffered = STORES.some(s => localStorage.getItem('imonicroat:' + s) != null); } catch (e) { buffered = false; }
     if (!buffered) return;
@@ -131,7 +132,6 @@
   function lsSave(store, obj) {
     try {
       localStorage.setItem('imonicroat:' + store, JSON.stringify(obj));
-      lsDirty = true;
     } catch (e) {
       // quota exceeded or serialization failure — degrade without throwing so a
       // put()/bulkPut() doesn't reject the whole operation
@@ -267,6 +267,14 @@
     return dump;
   }
 
+  // Which record stores a full backup is missing (meta is optional — it's
+  // device-local). Restore UIs use this to refuse truncated files up front;
+  // importAll itself stays lenient — partial replace is a valid db operation.
+  function missingStores(dump) {
+    if (!dump || dump.app !== 'imonicroat') return STORES.filter(s => s !== 'meta');
+    return STORES.filter(s => s !== 'meta' && !Array.isArray(dump[s]));
+  }
+
   // importAll merges by default (additive bulkPut) — this is what sync uses, and
   // it must NEVER clear, or a write that lands during an in-flight sync would be
   // destroyed. Pass {replace:true} ONLY for a user-initiated backup restore,
@@ -286,5 +294,5 @@
   }
 
   window.CRO = window.CRO || {};
-  CRO.db = { put, bulkPut, get, getAll, clear, replaceStore, remove, getMeta, setMeta, exportAll, importAll, STORES, _migrateWins: migrateWins };
+  CRO.db = { put, bulkPut, get, getAll, clear, replaceStore, remove, getMeta, setMeta, exportAll, importAll, missingStores, STORES, _migrateWins: migrateWins };
 })();

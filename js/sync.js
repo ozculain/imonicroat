@@ -290,6 +290,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
       // advance the logical clock past anything observed (atomic + monotonic)
       if (CRO.clock) await CRO.clock.observe(maxClock(final));
       await CRO.db.importAll(final);
+      if (!status.transport) return false; // disconnected mid-flight — stay disconnected
       status.connected = true;
       status.state = 'ok';
       status.lastSync = Date.now();
@@ -297,6 +298,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
       status.fileName = status.transport === 'gist' ? 'GitHub gist' : handle.name;
       return true;
     } catch (e) {
+      if (!status.transport) return false; // disconnected mid-flight — stay disconnected
       // network failures are routine on phones — report softly
       status.state = (e && /fetch|network|failed to/i.test(e.message || '')) ? 'offline' : 'error';
       status.error = e.message;

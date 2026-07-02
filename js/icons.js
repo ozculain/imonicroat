@@ -72,7 +72,8 @@
   /* Procedural avatar: initial in a tinted roundel, hue chosen per profile. */
   function avatar(name, hue, size) {
     size = size || 36;
-    const initial = (name || '?').trim().charAt(0).toUpperCase();
+    const initial = (name || '?').trim().charAt(0).toUpperCase()
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;'); // names are user-entered
     return `<svg width="${size}" height="${size}" viewBox="0 0 40 40" aria-hidden="true">
       <circle cx="20" cy="20" r="19" fill="hsl(${hue} 45% 88%)" stroke="hsl(${hue} 40% 55%)" stroke-width="1.5"/>
       <text x="20" y="26.5" text-anchor="middle" font-family="Iowan Old Style, Palatino Linotype, Georgia, serif"

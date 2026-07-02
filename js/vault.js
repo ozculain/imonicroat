@@ -82,6 +82,9 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
 
   /* ---------------- local lock ---------------- */
   const UNLOCK_LS = 'imonicroat:unlock';
+  // Private browsing can block BOTH storages; remember the unlock in memory so
+  // this tab at least stays unlocked instead of re-prompting on every boot cycle.
+  let unlockedMem = false;
 
   // The household passphrase encrypts sync. It is stored without turning on the
   // local lock screen — sync can be private without gating every app open.
@@ -96,12 +99,14 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     const hash = await passHash(pass, salt, ITER);
     await CRO.db.setMeta('lock', { salt: b64(salt), hash, it: ITER });
     await CRO.db.setMeta('passphrase', pass);
+    unlockedMem = true; // turning the lock on shouldn't lock you out right now
     try { localStorage.setItem(UNLOCK_LS, hash); } catch (e) { }
   }
 
   // Turn the lock OFF. Keeps the sync passphrase so syncing still works.
   async function disableLock() {
     await CRO.db.remove('meta', 'lock');
+    unlockedMem = false;
     try { localStorage.removeItem(UNLOCK_LS); sessionStorage.removeItem(UNLOCK_LS); } catch (e) { }
   }
 
@@ -112,6 +117,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   async function isUnlocked() {
     const lock = await CRO.db.getMeta('lock');
     if (!lock) return true;
+    if (unlockedMem) return true;
     try {
       return localStorage.getItem(UNLOCK_LS) === lock.hash ||
         sessionStorage.getItem(UNLOCK_LS) === lock.hash;
@@ -124,6 +130,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     if (!lock) return true;
     const h = await passHash(pass, unb64(lock.salt), lock.it || LEGACY_ITER);
     if (h !== lock.hash) return false;
+    unlockedMem = true;
     try {
       (remember === false ? sessionStorage : localStorage).setItem(UNLOCK_LS, h);
     } catch (e) { }
@@ -135,6 +142,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
   async function getPassphrase() { return CRO.db.getMeta('passphrase'); }
 
   async function lockNow() {
+    unlockedMem = false;
     try { localStorage.removeItem(UNLOCK_LS); sessionStorage.removeItem(UNLOCK_LS); } catch (e) { }
   }
 

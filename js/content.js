@@ -104,17 +104,17 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     },
     {
       id: 'g-genitiv', unit: 6, title: 'Case #4 — genitive: of, from, how much',
-      body: 'The genitive marks possession and quantity: feminine -a → -e (voda → čaša vode, a glass of water), masculine/neuter → -a (vino → boca vina). It follows koliko (how much), numbers, and prepositions like bez (without) and iz (from): "iz Zagreba". After 2, 3, 4 use the genitive singular (dva piva); after 5+ the genitive plural, which usually ends in -a (pet eura) — sometimes with an extra -a- slipped between final consonants (pjesma → pet pjesama).',
+      body: 'The genitive marks possession and quantity: feminine -a → -e (voda → čaša vode, a glass of water), masculine/neuter → -a (vino → boca vina).\n\nIt follows koliko (how much), numbers, and prepositions like bez (without) and iz (from): "iz Zagreba".\n\nAfter 2, 3, 4 use the genitive singular (dva piva); after 5+ the genitive plural, which usually ends in -a (pet eura) — sometimes with an extra -a- slipped between final consonants (pjesma → pet pjesama).',
       source: 'EC ch. 20 Genitive, ch. 44 Genitive Plural; ALX §22; BHZ (genitiv)'
     },
     {
-      id: 'g-brojevi', unit: 6, title: 'Numbers 1–10',
-      body: 'jedan, dva, tri, četiri, pet, šest, sedam, osam, devet, deset. Jedan agrees like an adjective (jedna kava, jedno pivo); dva has a feminine form dvije (dvije kave). Prices in Croatia are in euros since 1 January 2023: "To košta pet eura."',
-      source: 'EC ch. 47 Numbers; ALX §12; euro adoption: official (HNB, 1 Jan 2023)'
+      id: 'g-brojevi', unit: 6, title: 'Numbers to 100',
+      body: 'jedan, dva, tri, četiri, pet, šest, sedam, osam, devet, deset. Jedan agrees like an adjective (jedna kava, jedno pivo); dva has a feminine form dvije (dvije kave).\n\nTeens add -naest: jedanaest 11, dvanaest 12 … devetnaest 19 (note četrnaest 14 and šesnaest 16). Tens: dvadeset 20, trideset 30, četrdeset 40, pedeset 50, šezdeset 60, sedamdeset 70, osamdeset 80, devedeset 90, sto 100 — combine like English: dvadeset pet = 25.\n\nPrices are in euros since 1 January 2023; a number ending in jedan takes euro (dvadeset jedan euro), everything else eura (pet eura).',
+      source: 'EC ch. 47 Numbers; ALX §12; HJP; euro adoption: official (HNB, 1 Jan 2023)'
     },
     {
       id: 'g-vrijeme-izrazi', unit: 7, title: 'Saying when',
-      body: 'Days of the week take u + accusative: u ponedjeljak, u subotu. Parts of the day are adverbs: ujutro (in the morning), navečer (in the evening), danas/sutra/jučer (today/tomorrow/yesterday). "Koliko je sati?" = What time is it? — answer with numbers: "Pet je sati."',
+      body: 'Days of the week take u + accusative: u ponedjeljak, u subotu. Parts of the day are adverbs: ujutro (in the morning), navečer (in the evening), danas/sutra/jučer (today/tomorrow/yesterday).\n\n"Koliko je sati?" = What time is it? — answer with numbers: "Pet je sati."',
       source: 'EC ch. 12 Simple Conversations (time); ALX §12'
     },
     {
@@ -139,18 +139,18 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     },
     {
       id: 'g-futur', unit: 10, title: 'The future: ću + infinitive',
-      body: 'Future = clitic forms of htjeti (ću, ćeš, će, ćemo, ćete, će) + infinitive: "Sutra ću raditi." If the verb comes first, it joins the clitic — and a -ti infinitive drops its final i in spelling: "Kupit ću kruh" (never "kupiti ću"); -ći infinitives are unaffected: "Ići ću." Questions use the stressed form: "Hoćeš li ići s nama?" (Will you go with us?)',
+      body: 'Future = clitic forms of htjeti (ću, ćeš, će, ćemo, ćete, će) + infinitive: "Sutra ću raditi."\n\nIf the verb comes first, it joins the clitic — and a -ti infinitive drops its final i in spelling: "Kupit ću kruh" (never "kupiti ću"); -ći infinitives are unaffected: "Ići ću."\n\nQuestions use the stressed form: "Hoćeš li ići s nama?" (Will you go with us?)',
       source: 'EC ch. 40 Future Tense; ALX §15'
     },
     {
-      id: 'g-red-rijeci', unit: 10, title: 'The second-position rule',
-      body: 'Croatian little words — sam/si/je, ću/ćeš, se, mi/ti, ga/je — cluster in second position in the sentence, after the first stressed word: "Zovem se Ana" but "Moj muž se zove Marko." If you remember one word-order rule, make it this one; it explains most of what feels strange at first.',
+      id: 'g-red-rijeci', unit: 1, title: 'The second-position rule',
+      body: 'Croatian little words — sam/si/je, ću/ćeš, se, mi/ti, ga/je — cluster in second position in the sentence, after the first stressed word: "Zovem se Ana" but "Moj muž se zove Marko."\n\nIf you remember one word-order rule, make it this one; it explains most of what feels strange at first.',
       source: 'ALX (clitic ordering); EC ch. 26, ch. 40 (second-position clitics)'
     },
     {
-      id: 'g-dalmatinski', unit: 1, title: 'Your Dalmatian, beside the standard',
-      body: 'You two speak Dalmatian, so a word shows its Dalmatian form wherever it differs. Three patterns: (1) ikavian — standard ije/je becomes i: dijete → dite, lijep → lip, gdje → di; (2) coastal words from the Venetian centuries: baka → nona, trg → pjaca, sat → ura; (3) habits — final -m softens to -n (idem → iden, volim → volin) and infinitives drop the -i (raditi → radit). Learn the standard štokavian as the backbone — it is what is written and understood everywhere — and let the Dalmatian be how home sounds. If a form here is not how your family says it, flag it.',
-      source: 'Dalmatian ikavian reflex & Adriatic-Romance lexicon (general); refine to family usage via the in-app flag workflow'
+      id: 'g-dalmatinski', unit: 1, title: 'Dalmatian, beside the standard',
+      body: 'Dalmatian forms are shown beside the standard wherever they differ. Three patterns cover most of it: (1) ikavian — standard ije/je becomes i: dijete → dite, lijep → lip, gdje → di; (2) coastal words from the Venetian centuries: baka → nona, trg → pjaca, sat → ura; (3) habits — final -m softens to -n (idem → iden, volim → volin) and infinitives drop the -i (raditi → radit).\n\nThe standard štokavian is the backbone — it is what is written and understood everywhere; the Dalmatian is what you will hear on the coast.\n\nIf a form looks wrong, flag it.',
+      source: 'Dalmatian ikavian reflex & Adriatic-Romance lexicon (general); refine via the in-app flag workflow'
     }
   ];
 
@@ -287,6 +287,15 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     W('osam', 'osam', 'eight', 'num', null, 'O-sam', 6, 'HJP s.v. osam'),
     W('devet', 'devet', 'nine', 'num', null, 'DE-vet', 6, 'HJP s.v. devet'),
     W('deset', 'deset', 'ten', 'num', null, 'DE-set', 6, 'HJP s.v. deset'),
+    W('dvadeset', 'dvadeset', 'twenty', 'num', null, 'DVA-de-set', 6, 'HJP s.v. dvadeset; EC ch. 47 Numbers'),
+    W('trideset', 'trideset', 'thirty', 'num', null, 'TREE-de-set', 6, 'HJP s.v. trideset; EC ch. 47 Numbers'),
+    W('cetrdeset', 'četrdeset', 'forty', 'num', null, 'CHE-tr-de-set', 6, 'HJP s.v. četrdeset; EC ch. 47 Numbers'),
+    W('pedeset', 'pedeset', 'fifty', 'num', null, 'PE-de-set', 6, 'HJP s.v. pedeset; EC ch. 47 Numbers'),
+    W('sezdeset', 'šezdeset', 'sixty', 'num', null, 'SHEZ-de-set', 6, 'HJP s.v. šezdeset; EC ch. 47 Numbers'),
+    W('sedamdeset', 'sedamdeset', 'seventy', 'num', null, 'SE-dam-de-set', 6, 'HJP s.v. sedamdeset; EC ch. 47 Numbers'),
+    W('osamdeset', 'osamdeset', 'eighty', 'num', null, 'O-sam-de-set', 6, 'HJP s.v. osamdeset; EC ch. 47 Numbers'),
+    W('devedeset', 'devedeset', 'ninety', 'num', null, 'DE-ve-de-set', 6, 'HJP s.v. devedeset; EC ch. 47 Numbers'),
+    W('sto-num', 'sto', 'one hundred', 'num', null, 'STO', 6, 'HJP s.v. sto; EC ch. 47 Numbers', { note: 'Combine like English, just spoken: dvadeset pet = 25, sto = 100. (Same sound as što, "what" — context separates them.)' }),
     W('koliko', 'koliko', 'how much / how many', 'adv', null, 'KO-lee-ko', 6, 'HJP s.v. koliko', { note: 'Takes the genitive: koliko vode?' }),
     W('kostati', 'koštati', 'to cost', 'v', null, 'KOSH-ta-tee', 6, 'HJP s.v. koštati', { conj: 'košta, koštaju (3rd person)', note: '"Koliko košta?" = How much does it cost?' }),
     W('kupiti', 'kupiti', 'to buy (perfective)', 'v', null, 'KU-pee-tee', 6, 'HJP s.v. kupiti', { conj: 'kupim, kupiš…', note: 'Pair: kupovati (impf., kupujem) / kupiti (pf.). Here the perfective is the everyday one.' }),
@@ -446,6 +455,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     S('s606', 6, 'Račun, molim.', 'The bill, please.', ['racun', 'molim'], [], 'EC (attested restaurant phrase)', { alt: ['The check, please.', 'The bill please.'] }),
     S('s607', 6, 'Kupujem kruh u pekari.', 'I buy bread at the bakery.', ['kupiti', 'kruh', 'pekara'], ['g-lokativ', 'g-vid'], 'Pattern: EC ch. 15 Locations; kupovati/kupiti pair ALX §13', { alt: ['I am buying bread at the bakery.'], note: 'kupujem — the imperfective kupovati, for the habit.' }),
     S('s608', 6, 'Dvije kave, molim.', 'Two coffees, please.', ['dva', 'kava', 'molim'], ['g-brojevi', 'g-genitiv'], 'EC ch. 47 Numbers (attested café order; 2–4 + genitive singular)', { alt: ['Two coffees please.'] }),
+    S('s609', 6, 'To košta dvadeset pet eura.', 'That costs twenty-five euros.', ['kostati', 'dvadeset', 'pet', 'euro'], ['g-brojevi'], 'Pattern: EC ch. 47 Numbers (compound numerals); euro: HNB 2023', { alt: ['It costs twenty-five euros.', 'That costs 25 euros.'] }),
 
     /* Unit 7 */
     S('s701', 7, 'Koliko je sati?', 'What time is it?', ['koliko', 'sat'], ['g-vrijeme-izrazi'], 'EC ch. 12 (attested fixed phrase)'),

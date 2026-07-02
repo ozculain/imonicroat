@@ -30,6 +30,7 @@
 
   const NEW_WORDS_PER_LESSON = () => state.settings.newPerLesson || 4;
   const XP_CORRECT = 10, XP_HARD = 6;
+  let swWatched = false; // update listener attached once (boot runs again after unlock)
 
   // pure date / streak / week math lives in js/stats.js (unit-tested)
   const todayKey = CRO.stats.todayKey;
@@ -39,7 +40,20 @@
   async function boot() {
     // offline-first PWA when hosted (no-op when opened from file://)
     if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
+      navigator.serviceWorker.register('sw.js').then(reg => {
+        if (swWatched) return; // boot runs again after unlock — don't double-listen
+        swWatched = true;
+        reg.addEventListener('updatefound', () => {
+          const w = reg.installing;
+          if (!w) return;
+          w.addEventListener('statechange', () => {
+            // a fresh version installed behind a running one → it applies next open
+            if (w.state === 'installed' && navigator.serviceWorker.controller) {
+              toast('Updated — close and reopen to get the new version.');
+            }
+          });
+        });
+      }).catch(() => {});
     }
     CRO.audio.init();
     // refresh the home screen if a Croatian voice appears after first render
@@ -129,6 +143,48 @@
     return CRO.stats.weekTotals(acts, isoWeekKey(), state.profiles.map(p => p.id));
   }
 
+  /* ========== "say it to each other" daily mission (device-local) ==========
+     After a lesson, one thing that went well becomes today's mission: say it
+     out loud to your partner. Deliberately NOT synced — each device prompts
+     its own person, so both of you get nudged to speak. */
+  async function setMission(session) {
+    const cardId = session.lastGoodSent || session.lastGoodWord;
+    if (!cardId) return;
+    const cur = await CRO.db.getMeta('mission');
+    if (cur && cur.date === todayKey()) return; // one a day is plenty
+    await CRO.db.setMeta('mission', { date: todayKey(), cardId, done: false });
+  }
+
+  async function missionToday() {
+    const m = await CRO.db.getMeta('mission');
+    return m && m.date === todayKey() ? m : null;
+  }
+
+  function missionBlock(m) {
+    const item = m.cardId.startsWith('v:')
+      ? state.variety.find(v => v.id === m.cardId.slice(2))
+      : CRO.content.item(m.cardId);
+    if (!item) return null;
+    const box = el('div', 'mission card');
+    const dal = item.dal ? ` <span class="variety-chip">${esc(item.dal)}</span>` : '';
+    box.innerHTML = `
+      <div class="mission-label">${ic('sparkle', 14)} Reci to naglas · say it out loud today</div>
+      <div class="mission-hr">${esc(item.hr)} ${audioBtnHtml((item.hr || '').split(' / ')[0])}${dal}</div>
+      <div class="mission-en">${esc(item.en || '')}</div>
+      ${m.done
+        ? `<div class="mission-done">${ic('check', 13)} Rečeno · said it</div>`
+        : `<button class="btn ghost small mission-btn">${ic('check', 13)} Rečeno · said it</button>`}`;
+    bindAudioBtns(box);
+    const btn = box.querySelector('.mission-btn');
+    if (btn) btn.onclick = async () => {
+      m.done = true;
+      await CRO.db.setMeta('mission', m);
+      await addXp(5, false);
+      btn.outerHTML = `<div class="mission-done">${ic('check', 13)} Rečeno · +5 XP</div>`;
+    };
+    return box;
+  }
+
   /* ================= card availability ================= */
   function introducedWordIds() {
     return new Set(Object.keys(state.srs).filter(k => k.startsWith('w:')).map(k => k.slice(2)));
@@ -163,6 +219,28 @@
       if (p.seen < p.total) return u;
     }
     return CRO.content.UNITS[CRO.content.UNITS.length - 1];
+  }
+
+  /* ============ "ours" deck: variety entries with a meaning are cards ============ */
+  function oursEntries() {
+    return state.variety.filter(v => v.hr && v.en);
+  }
+  /** Exercise for any cardId — words/sentences from content, 'v:' from variety. */
+  function exFor(cardId, bucket) {
+    if (cardId.startsWith('v:')) {
+      const entry = state.variety.find(v => v.id === cardId.slice(2));
+      if (!entry || !entry.en) return null; // deleted or meaning removed → step skipped
+      return CRO.ex.exerciseForVariety(entry, bucket, CRO.audio.available(), oursEntries().concat(CRO.content.WORDS));
+    }
+    return CRO.ex.exerciseFor(cardId, bucket, CRO.audio.available());
+  }
+  /** Speak-aloud rep for any strong card (content item or ours-entry). */
+  function speakFor(cardId) {
+    const item = cardId.startsWith('v:')
+      ? state.variety.find(v => v.id === cardId.slice(2))
+      : CRO.content.item(cardId);
+    if (!item || !item.hr || !item.en) return null;
+    return CRO.ex.exSpeak(cardId, item);
   }
 
   /* ================= rendering ================= */
@@ -240,9 +318,9 @@
       <div class="onboard-art">${CRO.icons.sahovnica(5, 5, 18)}</div>
       <h1>Imo i Nicro</h1>
       <p class="lede">Croatian for the two of you — short daily lessons on top of a real
-      spaced-repetition engine, with every rule and word sourced. This is a private
-      household app: everything is locked behind your passphrase and your synced data
-      is end-to-end encrypted.</p>
+      spaced-repetition engine, with every rule and word sourced. Everything stays in
+      this browser; syncing between devices is optional and end-to-end encrypted, and
+      you can add a passphrase lock in Settings if you want one.</p>
       <div class="card form-card">
         <h2>Set up your household</h2>
         <label>First learner <input id="p1name" placeholder="Name" maxlength="14"></label>
@@ -250,6 +328,12 @@
         <hr>
         <label>Second learner <input id="p2name" placeholder="Name (optional)" maxlength="14"></label>
         <label class="check"><input type="checkbox" id="p2known"> already speaks some Croatian</label>
+        <label>Daily pace
+          <select id="p-pace">
+            <option value="2">relaxed — 2 new words a lesson</option>
+            <option value="4" selected>standard — 4</option>
+            <option value="6">keen — 6</option>
+          </select></label>
         <button class="btn primary" id="startBtn">Počnimo! · Let's begin</button>
         <p class="hint">Each of you gets your own progress. You can turn on a passphrase lock
         and set up sync between devices later, in Settings.</p>
@@ -323,6 +407,8 @@
         await CRO.db.put('profiles', p2);
         state.profiles.push(p2);
       }
+      state.settings.newPerLesson = parseInt($('#p-pace').value, 10) || 4;
+      await CRO.db.setMeta('settings', state.settings);
       state.activeId = p1.id;
       await CRO.db.setMeta('activeProfile', p1.id);
       await loadProfileSrs();
@@ -337,7 +423,9 @@
 
     const sInfo = await streakInfo();
     const scores = await weekScores();
-    const due = CRO.srs.dueCards(Object.values(state.srs), Date.now());
+    const liveOurs = new Set(oursEntries().map(v => v.id));
+    const due = CRO.srs.dueCards(Object.values(state.srs), Date.now())
+      .filter(c => !c.cardId.startsWith('v:') || liveOurs.has(c.cardId.slice(2)));
     const p = activeProfile();
     const partner = otherProfile();
 
@@ -347,8 +435,8 @@
     const lit = sInfo.youDone; // your flame lights when YOU practise
     let streakNote;
     if (sInfo.youDone && sInfo.partnerDone && partner) streakNote = 'Both done today — nice.';
-    else if (sInfo.youDone && partner) streakNote = `You're done. ${partner.name} can pick it up whenever.`;
-    else if (!sInfo.youDone && sInfo.partnerDone && partner) streakNote = `${partner.name} went today — join when you get a minute.`;
+    else if (sInfo.youDone && partner) streakNote = `You're done. ${esc(partner.name)} can pick it up whenever.`;
+    else if (!sInfo.youDone && sInfo.partnerDone && partner) streakNote = `${esc(partner.name)} went today — join when you get a minute.`;
     else streakNote = 'A few minutes keeps it going.';
     band.innerHTML = `
       <div class="streakbox">
@@ -365,11 +453,11 @@
       const wk = el('div', 'h2h');
       if (weeklyMode === 'duel') {
         const max = Math.max(a, b, 1);
-        const lead = a === b ? 'Dead heat this week.' : (a > b ? `${p.name} leads this week!` : `${partner.name} leads this week!`);
+        const lead = a === b ? 'Dead heat this week.' : (a > b ? `${esc(p.name)} leads this week!` : `${esc(partner.name)} leads this week!`);
         wk.innerHTML = `
           <div class="h2h-title">${ic('trophy', 16)} Tjedni dvoboj <span class="h2h-sub">· weekly duel</span></div>
-          <div class="h2h-row"><span class="h2h-name">${p.name}</span><div class="h2h-bar"><div style="width:${Math.round(a / max * 100)}%; background:hsl(${p.hue} 55% 52%)"></div></div><span class="h2h-xp">${a}</span></div>
-          <div class="h2h-row"><span class="h2h-name">${partner.name}</span><div class="h2h-bar"><div style="width:${Math.round(b / max * 100)}%; background:hsl(${partner.hue} 55% 52%)"></div></div><span class="h2h-xp">${b}</span></div>
+          <div class="h2h-row"><span class="h2h-name">${esc(p.name)}</span><div class="h2h-bar"><div style="width:${Math.round(a / max * 100)}%; background:hsl(${p.hue} 55% 52%)"></div></div><span class="h2h-xp">${a}</span></div>
+          <div class="h2h-row"><span class="h2h-name">${esc(partner.name)}</span><div class="h2h-bar"><div style="width:${Math.round(b / max * 100)}%; background:hsl(${partner.hue} 55% 52%)"></div></div><span class="h2h-xp">${b}</span></div>
           <div class="h2h-lead">${lead}</div>`;
       } else {
         // 'together' — one combined total this week, both contributions stacked
@@ -378,7 +466,7 @@
         wk.innerHTML = `
           <div class="h2h-title">${ic('trophy', 16)} Ovaj tjedan zajedno <span class="h2h-sub">· together this week</span></div>
           <div class="h2h-bar wide"><div style="width:${aw}%; background:hsl(${p.hue} 55% 52%)"></div><div style="width:${100 - aw}%; background:hsl(${partner.hue} 55% 52%)"></div></div>
-          <div class="h2h-lead">${total} XP together — ${p.name} ${a}, ${partner.name} ${b}</div>`;
+          <div class="h2h-lead">${total} XP together — ${esc(p.name)} ${a}, ${esc(partner.name)} ${b}</div>`;
       }
       band.appendChild(wk);
     }
@@ -395,6 +483,10 @@
       </button>`;
     main.appendChild(start);
     start.querySelector('#startLesson').onclick = () => startSession();
+
+    // today's say-it-to-each-other mission, until it's done
+    const mis = await missionToday();
+    if (mis) { const mb = missionBlock(mis); if (mb) main.appendChild(mb); }
 
     // flagged-items shortcut
     const openFlags = state.flags.filter(f => !f.resolved);
@@ -468,7 +560,7 @@
     return parts.map(pt => {
       const key = Object.keys(CRO.content.SOURCES).find(k => pt.startsWith(k) || pt.startsWith(CRO.content.SOURCES[k].label));
       const det = key ? CRO.content.SOURCES[key].detail : '';
-      return `<span class="src" title="${det.replace(/"/g, '&quot;')}">${pt}</span>`;
+      return `<span class="src" title="${esc(det)}">${esc(pt)}</span>`;
     }).join(' ');
   }
 
@@ -481,26 +573,26 @@
     if (!item) return;
     const isWord = cardId.startsWith('w:');
     const m = modal();
-    let html = `<h3 class="notes-hr">${item.hr} ${audioBtnHtml(item.hr)}</h3><p class="notes-en">${item.en}</p>`;
+    let html = `<h3 class="notes-hr">${esc(item.hr)} ${audioBtnHtml(item.hr)}</h3><p class="notes-en">${esc(item.en)}</p>`;
     if (isWord) {
       if (item.g) html += `<p class="notes-line"><b>Gender:</b> ${({ m: 'masculine', f: 'feminine', n: 'neuter' })[item.g]}</p>`;
-      if (item.pron) html += `<p class="notes-line"><b>Say it:</b> ${item.pron}</p>`;
-      if (item.conj) html += `<p class="notes-line"><b>Present:</b> ${item.conj}</p>`;
-      if (item.pf) html += `<p class="notes-line"><b>Perfective partner:</b> ${item.pf}</p>`;
-      if (item.forms) html += `<p class="notes-line"><b>Forms taught:</b> ${Object.entries(item.forms).map(([k, v]) => k + ': ' + v).join(' · ')}</p>`;
+      if (item.pron) html += `<p class="notes-line"><b>Say it:</b> ${esc(item.pron)}</p>`;
+      if (item.conj) html += `<p class="notes-line"><b>Present:</b> ${esc(item.conj)}</p>`;
+      if (item.pf) html += `<p class="notes-line"><b>Perfective partner:</b> ${esc(item.pf)}</p>`;
+      if (item.forms) html += `<p class="notes-line"><b>Forms taught:</b> ${Object.entries(item.forms).map(([k, v]) => esc(k) + ': ' + esc(v)).join(' · ')}</p>`;
       if (item.dal) html += `<p class="notes-line"><b>Dalmatinski:</b> ${esc(item.dal)}</p>`;
     }
-    if (item.note) html += `<p class="notes-note">${item.note}</p>`;
+    if (item.note) html += `<p class="notes-note">${esc(item.note)}</p>`;
     const vars = varietyFor(cardId.slice(2));
     if (vars.length && state.settings.showVariety) {
       html += `<div class="notes-variety"><b>${ic('leaf', 13)} Family variety:</b> ` +
-        vars.map(v => `<span class="variety-chip" title="${(v.note || '') + (v.region ? ' (' + v.region + ')' : '')}">${v.hr}</span>`).join(' ') + '</div>';
+        vars.map(v => `<span class="variety-chip" title="${esc(v.note || '') + (v.region ? ' (' + esc(v.region) + ')' : '')}">${esc(v.hr)}</span>`).join(' ') + '</div>';
     }
     // related grammar
     const gIds = (item.grammar || []);
     gIds.forEach(gid => {
       const g = CRO.content.gramById[gid];
-      if (g) html += `<div class="notes-gram"><h4>${g.title}</h4><p>${g.body}</p><div class="srcline">${sourceChips(g.source)}</div></div>`;
+      if (g) html += `<div class="notes-gram"><h4>${esc(g.title)}</h4>${gramBody(g.body)}<div class="srcline">${sourceChips(g.source)}</div></div>`;
     });
     html += `<div class="srcline"><b>Source:</b> ${sourceChips(item.source)}</div>`;
     html += `<p class="notes-meta">Sentences in this course follow patterns attested in the cited references; the flag → review workflow exists so your native reviewer can correct anything that reads off.</p>`;
@@ -514,7 +606,7 @@
     const m = modal();
     const grams = CRO.content.GRAMMAR.filter(g => g.unit === u.n);
     m.body.innerHTML = `<h3>${u.hrTitle} · ${u.title}</h3>` +
-      (grams.length ? grams.map(g => `<div class="notes-gram"><h4>${g.title}</h4><p>${g.body}</p><div class="srcline">${sourceChips(g.source)}</div></div>`).join('') :
+      (grams.length ? grams.map(g => `<div class="notes-gram"><h4>${esc(g.title)}</h4>${gramBody(g.body)}<div class="srcline">${sourceChips(g.source)}</div></div>`).join('') :
         '<p>No grammar notes in this unit.</p>');
   }
 
@@ -525,7 +617,14 @@
     const body = el('div', 'modal-body');
     box.appendChild(x); box.appendChild(body); back.appendChild(box);
     document.body.appendChild(back);
-    const close = () => back.remove();
+    const opener = document.activeElement;
+    const onKey = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    const close = () => {
+      document.removeEventListener('keydown', onKey);
+      back.remove();
+      if (opener && document.contains(opener) && opener.focus) opener.focus();
+    };
     x.onclick = close;
     back.onclick = e => { if (e.target === back) close(); };
     return { body, close };
@@ -537,7 +636,7 @@
     const m = modal();
     m.body.innerHTML = `
       <h3>${ic('flag', 18)} Flag for native review</h3>
-      <p class="notes-en">“${item ? item.hr : cardId}” — what looks wrong?</p>
+      <p class="notes-en">“${esc(item ? item.hr : cardId)}” — what looks wrong?</p>
       <textarea id="flagNote" rows="3" placeholder="e.g. nobody says this — we'd say … instead"></textarea>
       <button class="btn primary" id="flagSave">Save flag</button>`;
     m.body.querySelector('#flagSave').onclick = async () => {
@@ -582,7 +681,7 @@
       const card = el('div', 'card flagcard');
       const who = flags.map(f => {
         const prof = state.profiles.find(p => p.id === f.profileId);
-        return `<div class="flag-note">${ic('flag', 13)} <b>${prof ? prof.name : '?'}</b>${f.context ? ' <span class="flag-ctx">(' + f.context + ')</span>' : ''}: ${f.note || '<i>no note</i>'}</div>`;
+        return `<div class="flag-note">${ic('flag', 13)} <b>${prof ? esc(prof.name) : '?'}</b>${f.context ? ' <span class="flag-ctx">(' + esc(f.context) + ')</span>' : ''}: ${f.note ? esc(f.note) : '<i>no note</i>'}</div>`;
       }).join('');
       card.innerHTML = `
         ${who}
@@ -645,13 +744,19 @@
 
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
 
+  // Grammar bodies carry \n\n paragraph breaks — render them as real paragraphs
+  // instead of a phone-hostile wall of text.
+  function gramBody(body) {
+    return esc(body).split(/\n\s*\n/).map(p => `<p>${p}</p>`).join('');
+  }
+
   /* ================= family variety layer ================= */
   function viewVariety(root) {
     const main = el('main', 'variety');
     root.appendChild(main);
     main.appendChild(el('h2', null, `${ic('leaf', 20)} Family variety`));
     main.appendChild(el('p', 'lede-small',
-      'Regional vocabulary and alternative phrasings your family actually uses. These stay tagged separately from standard Croatian — shown as green chips, never mixed into the standard answers.'));
+      'Regional and alternative Croatian, kept separate from the standard course — green chips, never mixed into the standard answers. Give an entry a meaning and it joins your lessons as its own card.'));
 
     const form = el('div', 'card form-card');
     form.innerHTML = `
@@ -683,7 +788,7 @@
       const base = v.baseId ? CRO.content.wordById[v.baseId] : null;
       const row = el('div', 'card vrow');
       row.innerHTML = `
-        <div><span class="variety-chip big">${esc(v.hr)}</span> ${esc(v.en || '')}
+        <div><span class="variety-chip big">${esc(v.hr)}</span> ${esc(v.en || '')}${v.en ? ' <span class="hint-inline">· in lessons</span>' : ''}
           ${base ? `<span class="vrow-base">↔ standard: <b>${esc(base.hr)}</b></span>` : ''}
           ${v.region ? `<div class="vrow-region">${esc(v.region)}</div>` : ''}
           ${v.note ? `<div class="vrow-note">${esc(v.note)}</div>` : ''}</div>
@@ -752,6 +857,7 @@
     // app-lock section wiring
     async function refreshLockUI() {
       const on = await CRO.vault.hasLock();
+      if (!$('#s-lockstatus')) return; // navigated away while hasLock resolved
       $('#s-lockstatus').textContent = on
         ? 'The lock is on — this device asks for the passphrase on open.'
         : 'The lock is off. The app opens straight away on this device.';
@@ -767,8 +873,14 @@
       } else {
         const p = $('#s-pass').value;
         if (p.length < 4) { toast('Pick a passphrase of at least 4 characters.'); return; }
-        await CRO.vault.enableLock(p);
-        $('#s-pass').value = '';
+        const stored = await CRO.vault.getPassphrase();
+        if (CRO.sync.status.connected && stored && stored !== p) {
+          toast('Your sync already uses a different passphrase — use that same one, or disconnect sync first.');
+          return;
+        }
+        await CRO.vault.enableLock(p); // slow on purpose (600k PBKDF2) — the view may be gone by now
+        const sp = $('#s-pass');
+        if (sp) sp.value = '';
         CRO.sync.syncNow('rekey'); // re-encrypt the remote copy under this passphrase
         toast('Lock on. Use the same passphrase on your other device.');
       }
@@ -784,6 +896,7 @@
     function renderSyncRow() {
       const st = CRO.sync.status;
       const lbl = $('#s-syncstatus'), body = $('#s-syncbody');
+      if (!lbl || !body) return; // navigated away since this was queued
       body.innerHTML = '';
       if (st.state === 'ok') lbl.textContent = `Connected via ${st.transport === 'gist' ? 'GitHub' : st.fileName} · last synced ${new Date(st.lastSync).toLocaleTimeString()}`;
       else if (st.state === 'offline') lbl.textContent = 'Connected — offline right now; sync resumes automatically.';
@@ -840,7 +953,12 @@
       body.appendChild(gistBox);
       gistBox.querySelector('#g-connect').onclick = async () => {
         const pass = $('#g-pass').value;
-        if (pass) await CRO.vault.setSyncPassphrase(pass); // encrypt sync without turning on the lock
+        if (!pass) { toast('Enter the shared passphrase — it encrypts your synced data.'); return; }
+        if (await CRO.vault.hasLock()) {
+          const stored = await CRO.vault.getPassphrase();
+          if (stored && stored !== pass) { toast('This device\'s lock uses a different passphrase — use that same one here.'); return; }
+        }
+        await CRO.vault.setSyncPassphrase(pass); // encrypt sync without turning on the lock
         const code = $('#g-paircode').value.trim();
         const ok = code ? await CRO.sync.connectWithCode(code) : await CRO.sync.setupGist($('#g-token').value, $('#g-id').value);
         if (ok) { toast('GitHub sync connected.'); state.profiles = await CRO.db.getAll('profiles'); await loadProfileSrs(); }
@@ -887,6 +1005,8 @@
       if (!file) return;
       try {
         const dump = JSON.parse(await file.text());
+        const missing = CRO.db.missingStores(dump);
+        if (missing.length) throw new Error('backup file is incomplete (missing: ' + missing.join(', ') + ') — nothing was changed.');
         await CRO.db.importAll(dump, { replace: true }); // restore = exact replace
         toast('Imported. Reloading…');
         setTimeout(() => location.reload(), 700);
@@ -963,14 +1083,21 @@
        6. recap on the summary screen
   */
   function startSession() {
+    if (!CRO.audio.available() && !CRO.audio.nearVoice && !state.noVoiceNoted) {
+      state.noVoiceNoted = true; // once per app open — the course quietly halves without a voice
+      toast('No Croatian voice on this device — listening practice is off. Settings shows how to add one.');
+    }
     CRO.ex.reseed(Date.now());
     const now = Date.now();
-    const due = CRO.srs.dueCards(Object.values(state.srs), now).slice(0, 8);
+    const liveOurs = new Set(oursEntries().map(v => v.id));
+    const due = CRO.srs.dueCards(Object.values(state.srs), now)
+      .filter(c => !c.cardId.startsWith('v:') || liveOurs.has(c.cardId.slice(2)))
+      .slice(0, 8);
     const newWords = nextNewWords(NEW_WORDS_PER_LESSON());
     const newSents = availableNewSentences(3, newWords.map(w => w.id));
 
     const steps = [];
-    const learned = { words: newWords, grammar: [], sentences: newSents };
+    const learned = { words: newWords, grammar: [], sentences: newSents, ours: [] };
 
     // 1. unit opener when this lesson is the first visit to a unit
     if (newWords.length) {
@@ -984,7 +1111,7 @@
     // 2. new words: teach, then recognise
     newWords.forEach(w => {
       steps.push({ kind: 'intro', word: w });
-      steps.push({ kind: 'ex', make: () => CRO.ex.exerciseFor('w:' + w.id, 'new', CRO.audio.available()) });
+      steps.push({ kind: 'ex', make: () => exFor('w:' + w.id, 'new') });
     });
 
     // 3. new sentences: grammar concept → teach screen → easy exercise
@@ -999,15 +1126,29 @@
         }
       });
       steps.push({ kind: 'sentTeach', sent: s });
-      steps.push({ kind: 'ex', make: () => CRO.ex.exerciseFor('s:' + s.id, 'new', CRO.audio.available()) });
+      steps.push({ kind: 'ex', make: () => exFor('s:' + s.id, 'new') });
+    });
+
+    // 3b. "ours": one new family entry per lesson, taught then recognised
+    oursEntries().filter(v => !state.srs['v:' + v.id]).slice(0, 1).forEach(v => {
+      learned.ours.push(v);
+      steps.push({ kind: 'oursIntro', entry: v });
+      steps.push({ kind: 'ex', make: () => exFor('v:' + v.id, 'new') });
     });
 
     // 4. due reviews
     const rest = [];
-    due.forEach(c => rest.push({ kind: 'ex', make: () => CRO.ex.exerciseFor(c.cardId, CRO.srs.maturity(c), CRO.audio.available()) }));
+    due.forEach(c => rest.push({ kind: 'ex', make: () => exFor(c.cardId, CRO.srs.maturity(c)) }));
 
     // 5. second pass over today's new words, one notch harder
-    newWords.forEach(w => rest.push({ kind: 'ex', make: () => CRO.ex.exerciseFor('w:' + w.id, 'learning', CRO.audio.available()) }));
+    newWords.forEach(w => rest.push({ kind: 'ex', make: () => exFor('w:' + w.id, 'learning') }));
+
+    // 5b. speak-aloud reps: up to two per lesson from stronger cards —
+    // self-graded, because the trip needs a mouth, not just recall
+    CRO.ex.shuffle(Object.values(state.srs).filter(c => c.state === 'review'))
+      .sort((a, b) => (b.cardId.startsWith('s:') ? 1 : 0) - (a.cardId.startsWith('s:') ? 1 : 0))
+      .slice(0, 2)
+      .forEach(c => rest.push({ kind: 'ex', make: () => speakFor(c.cardId) }));
 
     const all = steps.concat(CRO.ex.shuffle(rest));
 
@@ -1017,6 +1158,12 @@
     if (sessionWordIds.length >= 5) {
       const ws = CRO.ex.shuffle(sessionWordIds).slice(0, 5).map(id => CRO.content.wordById[id]).filter(Boolean);
       if (ws.length === 5) all.splice(Math.floor(all.length / 2), 0, { kind: 'pairs', words: ws });
+    }
+
+    // price-listening drill: once the tens are in play and a voice exists,
+    // one per lesson — hearing prices is the market/café moment
+    if (state.srs['w:dvadeset'] && state.srs['w:sto-num'] && CRO.audio.available()) {
+      all.push({ kind: 'ex', make: () => CRO.ex.exPriceListen() });
     }
 
     if (!all.length) { toast('Nothing due — come back later today!'); return; }
@@ -1057,6 +1204,10 @@
       renderSentTeach(main, step.sent, () => { s.idx += 1; nextStep(main); });
       return;
     }
+    if (step.kind === 'oursIntro') {
+      renderOursIntro(main, step.entry, () => { s.idx += 1; nextStep(main); });
+      return;
+    }
     if (step.kind === 'pairs') {
       renderPairs(main, step.words, async (perWordOk) => {
         for (const [wid, ok] of Object.entries(perWordOk)) {
@@ -1080,12 +1231,20 @@
           const rating = ex2.rating ? ex2.rating(res, ms) : (res.ok ? 3 : 1);
           await gradeCard(ex2.cardId, rating);
         }
-        if (res.ok) { s.correct += 1; s.xp += (res.diacriticsOnly || res.typo) ? XP_HARD : XP_CORRECT; }
+        if (res.ok) {
+          s.correct += 1;
+          s.xp += (res.diacriticsOnly || res.typo) ? XP_HARD : XP_CORRECT;
+          // remember something that went well — it becomes today's say-it mission
+          if (ex2.cardId) {
+            if (ex2.cardId.startsWith('s:')) s.lastGoodSent = ex2.cardId;
+            else s.lastGoodWord = ex2.cardId;
+          }
+        }
         else if (ex2.cardId && (s.requeued[ex2.cardId] || 0) < 1) {
           // missed it → see it again before the session ends
           s.requeued[ex2.cardId] = 1;
           const cardId = ex2.cardId;
-          s.steps.push({ kind: 'ex', make: () => CRO.ex.exerciseFor(cardId, 'learning', CRO.audio.available()) });
+          s.steps.push({ kind: 'ex', make: () => exFor(cardId, 'learning') });
         }
         s.idx += 1;
         nextStep(main);
@@ -1107,8 +1266,12 @@
 
   async function finishSession(main) {
     const s = state.session;
+    if (!s || s.finishing) return; // re-entrancy guard: it awaits sync, so a raced second call must no-op
+    s.finishing = true;
     await addXp(Math.round(s.xp), true);
-    await CRO.sync.syncNow('lesson'); // pick up partner's day before showing the streak
+    const synced = await CRO.sync.syncNow('lesson'); // pick up partner's day before showing the streak
+    if (!synced && CRO.sync.status.state === 'error') toast('Sync failed — see Settings.');
+    await setMission(s);
     state.session = null;
     render('summary', s);
   }
@@ -1121,13 +1284,15 @@
     const partner = otherProfile();
     let streakLine;
     if (sInfo.todayComplete) streakLine = `${ic('flame', 22)} Shared streak: <b>${sInfo.streak}</b> — both of you practised today.`;
-    else if (partner) streakLine = `${ic('flameDim', 22)} Your half is done. The streak ticks to <b>${sInfo.streak + 1}</b> once ${partner.name} practises today.`;
+    else if (partner) streakLine = `${ic('flameDim', 22)} Your half is done. The streak ticks to <b>${sInfo.streak + 1}</b> once ${esc(partner.name)} practises today.`;
     else streakLine = `${ic('flame', 22)} Streak: <b>${sInfo.streak}</b>`;
-    const learned = s.learned || { words: [], grammar: [], sentences: [] };
+    const learned = s.learned || { words: [], grammar: [], sentences: [], ours: [] };
+    const ours = learned.ours || [];
     let recap = '';
-    if (learned.words.length || learned.grammar.length) {
+    if (learned.words.length || learned.grammar.length || ours.length) {
       recap = `<div class="recap">
         ${learned.words.length ? `<div class="recap-row"><b>New words</b> ${learned.words.map(w => `<span class="recap-chip">${esc(w.hr.split(' / ')[0])}</span>`).join(' ')}</div>` : ''}
+        ${ours.length ? `<div class="recap-row"><b>Naše riječi · ours</b> ${ours.map(v => `<span class="recap-chip">${esc(v.hr)}</span>`).join(' ')}</div>` : ''}
         ${learned.grammar.length ? `<div class="recap-row"><b>New grammar</b> ${learned.grammar.map(g => `<span class="recap-chip">${esc(g.title)}</span>`).join(' ')}</div>` : ''}
       </div>`;
     }
@@ -1145,6 +1310,9 @@
     main.appendChild(card);
     card.querySelector('#sumHome').onclick = () => render('home');
     card.querySelector('#sumAgain').onclick = () => startSession();
+
+    const mis = await missionToday();
+    if (mis) { const mb = missionBlock(mis); if (mb) main.appendChild(mb); }
   }
 
   /* ================= exercise rendering ================= */
@@ -1165,15 +1333,15 @@
     return stage;
   }
 
-  function audioBtnHtml(text, slow) {
+  function audioBtnHtml(text, rate) {
     if (!CRO.audio.available() && !CRO.audio.nearVoice) return '';
-    return `<button class="audiobtn" data-say="${esc(text)}" ${slow ? 'data-slow="1"' : ''} title="Listen">${ic('speaker', 16)}</button>`;
+    return `<button class="audiobtn" data-say="${esc(text)}" ${rate ? `data-rate="${rate}"` : ''} title="Listen">${ic('speaker', 16)}</button>`;
   }
   function bindAudioBtns(scope) {
     scope.querySelectorAll('.audiobtn').forEach(b => {
       b.onclick = e => {
         e.stopPropagation();
-        CRO.audio.speak(b.dataset.say, b.dataset.slow ? 0.6 : 0.85);
+        CRO.audio.speak(b.dataset.say, b.dataset.rate ? parseFloat(b.dataset.rate) : 0.85);
       };
     });
   }
@@ -1199,12 +1367,12 @@
     const box = el('div', 'introcard card');
     box.innerHTML = `
       <div class="intro-label">${ic('sparkle', 15)} new word</div>
-      <div class="intro-hr">${word.hr} ${audioBtnHtml(word.hr.split(' / ')[0])}</div>
+      <div class="intro-hr">${esc(word.hr)} ${audioBtnHtml(word.hr.split(' / ')[0])}</div>
       ${genderTag}
-      <div class="intro-en">${word.en}</div>
-      <div class="intro-pron">${word.pron || ''}</div>
-      ${word.conj ? `<div class="intro-conj">${word.conj}</div>` : ''}
-      ${word.note ? `<div class="intro-note">${word.note}</div>` : ''}
+      <div class="intro-en">${esc(word.en)}</div>
+      <div class="intro-pron">${esc(word.pron || '')}</div>
+      ${word.conj ? `<div class="intro-conj">${esc(word.conj)}</div>` : ''}
+      ${word.note ? `<div class="intro-note">${esc(word.note)}</div>` : ''}
       ${word.dal ? `<div class="intro-dal">${ic('leaf', 13)} <b>Dalmatinski:</b> <span class="variety-chip">${esc(word.dal)}</span></div>` : ''}
       ${vars.length ? `<div class="notes-variety">${ic('leaf', 13)} ${vars.map(v => `<span class="variety-chip" title="${esc(v.note || '')}">${esc(v.hr)}</span>`).join(' ')}</div>` : ''}
       <div class="srcline">${sourceChips(word.source)}</div>
@@ -1217,6 +1385,23 @@
     bindAudioBtns(box);
     if (CRO.audio.available()) CRO.audio.speak(word.hr.split(' / ')[0]);
     $('#introNext').onclick = onNext;
+  }
+
+  /** Intro screen for an "ours" card (variety entry with a meaning). */
+  function renderOursIntro(main, entry, onNext) {
+    const stage = lessonChrome(main, sessionChromeOpts());
+    const box = el('div', 'introcard card');
+    box.innerHTML = `
+      <div class="intro-label">${ic('leaf', 15)} naša riječ · ours</div>
+      <div class="intro-hr">${esc(entry.hr)} ${audioBtnHtml(entry.hr)}</div>
+      <div class="intro-en">${esc(entry.en)}</div>
+      ${entry.region ? `<div class="intro-pron">${esc(entry.region)}</div>` : ''}
+      ${entry.note ? `<div class="intro-note">${esc(entry.note)}</div>` : ''}
+      <button class="btn primary" id="introNext">Got it</button>`;
+    stage.appendChild(box);
+    bindAudioBtns(box);
+    if (CRO.audio.available()) CRO.audio.speak(entry.hr);
+    box.querySelector('#introNext').onclick = onNext;
   }
 
   function sessionProgress() {
@@ -1251,7 +1436,7 @@
     box.innerHTML = `
       <div class="intro-label">${ic('sparkle', 15)} new grammar</div>
       <div class="teach-title">${esc(g.title)}</div>
-      <p class="teach-body">${esc(g.body)}</p>
+      <div class="teach-body">${gramBody(g.body)}</div>
       ${exampleSent ? `<div class="teach-example">${esc(exampleSent.hr)} ${audioBtnHtml(exampleSent.hr)}<span class="teach-example-en">${esc(exampleSent.en)}</span></div>` : ''}
       <div class="srcline">${sourceChips(g.source)}</div>
       <button class="btn primary" id="contBtn">Got it</button>`;
@@ -1294,7 +1479,9 @@
     const box = el('div', 'excard card');
     stage.appendChild(box);
     const tools = el('div', 'extools');
-    if (ex.cardId) { tools.appendChild(notesBtnEl(ex.cardId)); tools.appendChild(flagBtnEl(ex.cardId, ex.type)); }
+    // "ours" cards have no content notes, and native-review flags don't apply —
+    // you edit or delete your own entries on the variety screen instead
+    if (ex.cardId && !ex.cardId.startsWith('v:')) { tools.appendChild(notesBtnEl(ex.cardId)); tools.appendChild(flagBtnEl(ex.cardId, ex.type)); }
     box.appendChild(tools);
 
     const submitWrap = el('div', 'submitrow');
@@ -1306,8 +1493,8 @@
     switch (ex.type) {
       case 'choice': {
         const w = ex.word;
-        if (ex.dir === 'hr2en') prompt(`<span class="ex-kind">${ic('swap', 14)} What does this mean?</span><div class="ex-big">${w.hr} ${audioBtnHtml(w.hr.split(' / ')[0])}</div>`);
-        else prompt(`<span class="ex-kind">${ic('swap', 14)} Which is “${w.en}”?</span>`);
+        if (ex.dir === 'hr2en') prompt(`<span class="ex-kind">${ic('swap', 14)} What does this mean?</span><div class="ex-big">${esc(w.hr)} ${audioBtnHtml(w.hr.split(' / ')[0])}</div>`);
+        else prompt(`<span class="ex-kind">${ic('swap', 14)} Which is “${esc(w.en)}”?</span>`);
         const list = el('div', 'choices');
         ex.options.forEach((o, idx) => {
           const b = el('button', 'choice', ex.dir === 'hr2en' ? esc(o.en) : esc(o.hr));
@@ -1320,7 +1507,7 @@
       }
       case 'listenChoice': {
         prompt(`<span class="ex-kind">${ic('ear', 14)} What do you hear?</span>
-          <div class="listenrow">${audioBtnHtml(ex.audioText)} ${audioBtnHtml(ex.audioText, true)}<span class="listen-slow">slow</span></div>`);
+          <div class="listenrow">${audioBtnHtml(ex.audioText, ex.rate)} ${audioBtnHtml(ex.audioText, 0.6)}<span class="listen-slow">slow</span> ${audioBtnHtml(ex.audioText, 1.05)}<span class="listen-slow">fast</span></div>`);
         const list = el('div', 'choices');
         ex.options.forEach((o, idx) => {
           const b = el('button', 'choice', esc(o.hr));
@@ -1328,14 +1515,47 @@
           list.appendChild(b);
         });
         box.appendChild(list);
-        setTimeout(() => CRO.audio.speak(ex.audioText), 250);
+        setTimeout(() => CRO.audio.speak(ex.audioText, ex.rate), 250);
         break;
       }
       case 'listenType': {
         prompt(`<span class="ex-kind">${ic('ear', 14)} Type what you hear</span>
-          <div class="listenrow">${audioBtnHtml(ex.audioText)} ${audioBtnHtml(ex.audioText, true)}<span class="listen-slow">slow</span></div>`);
+          <div class="listenrow">${audioBtnHtml(ex.audioText, ex.rate)} ${audioBtnHtml(ex.audioText, 0.6)}<span class="listen-slow">slow</span> ${audioBtnHtml(ex.audioText, 1.05)}<span class="listen-slow">fast</span></div>`);
         getAnswer = typedInput(box, 'Type the Croatian…');
-        setTimeout(() => CRO.audio.speak(ex.audioText), 250);
+        setTimeout(() => CRO.audio.speak(ex.audioText, ex.rate), 250);
+        break;
+      }
+      case 'priceListen': {
+        prompt(`<span class="ex-kind">${ic('ear', 14)} Koliko košta? · type the number</span>
+          <div class="listenrow">${audioBtnHtml(ex.audioText, ex.rate)} ${audioBtnHtml(ex.audioText, 0.6)}<span class="listen-slow">slow</span> ${audioBtnHtml(ex.audioText, 1.05)}<span class="listen-slow">fast</span></div>`);
+        getAnswer = typedInput(box, '€', true);
+        const priceInp = box.querySelector('input.typed');
+        if (priceInp) priceInp.inputMode = 'numeric';
+        setTimeout(() => CRO.audio.speak(ex.audioText, ex.rate), 250);
+        break;
+      }
+      case 'speak': {
+        prompt(`<span class="ex-kind">${ic('speaker', 14)} Reci naglas · say it out loud</span><div class="ex-big">“${esc((ex.item.en || '').split(' / ')[0])}”</div>`);
+        const revWrap = el('div', 'submitrow');
+        const reveal = el('button', 'btn primary', 'Show the Croatian');
+        revWrap.appendChild(reveal);
+        box.appendChild(revWrap);
+        reveal.onclick = () => {
+          revWrap.remove();
+          const ans = el('div', 'speak-answer');
+          ans.innerHTML = `<div class="ex-big">${esc(ex.item.hr)} ${audioBtnHtml((ex.item.hr || '').split(' / ')[0])}</div>
+            <div class="ex-sub">Did you say it out loud?</div>`;
+          box.appendChild(ans);
+          bindAudioBtns(ans);
+          if (CRO.audio.available()) CRO.audio.speak((ex.item.hr || '').split(' / ')[0]);
+          const row = el('div', 'row speak-grade');
+          const good = el('button', 'btn primary', `${ic('check', 15)} Said it`);
+          const bad = el('button', 'btn ghost', 'Stumbled');
+          good.onclick = () => submit(true);
+          bad.onclick = () => submit(false);
+          row.appendChild(good); row.appendChild(bad);
+          box.appendChild(row);
+        };
         break;
       }
       case 'sentChoiceEn': {
@@ -1421,15 +1641,19 @@
       if (btnEl) btnEl.classList.add(res.ok ? 'right' : 'wrong');
       const fb = el('div', 'feedback ' + (res.ok ? 'good' : 'bad'));
       let msg;
-      if (res.ok && res.diacriticsOnly) msg = `${ic('check', 18)} Right — mind the little hooks: <b>${esc(res.expected)}</b>`;
+      if (res.selfGraded) msg = res.ok
+        ? `${ic('check', 18)} Lijepo — said out loud.`
+        : `${ic('cross', 18)} No problem — it comes back soon.`;
+      else if (res.ok && res.dalmatian) msg = `${ic('check', 18)} Točno — dalmatinski! Standard: <b>${esc(res.expected)}</b>`;
+      else if (res.ok && res.diacriticsOnly) msg = `${ic('check', 18)} Right — mind the little hooks: <b>${esc(res.expected)}</b>`;
       else if (res.ok && res.typo) msg = `${ic('check', 18)} Close enough — exactly: <b>${esc(res.expected)}</b>`;
       else if (res.ok) msg = `${ic('check', 18)} Točno!`;
       else msg = `${ic('cross', 18)} Not quite. Answer: <b>${esc(res.expected)}</b>`;
       const item = ex.cardId ? CRO.content.item(ex.cardId) : null;
       fb.innerHTML = `<div class="fb-msg">${msg}</div>
-        ${item && item.hr && !res.ok ? `<div class="fb-extra">${esc(item.hr)} ${audioBtnHtml((item.hr || '').split(' / ')[0])}</div>` : ''}
+        ${item && item.hr && !res.ok && !res.selfGraded ? `<div class="fb-extra">${esc(item.hr)} ${audioBtnHtml((item.hr || '').split(' / ')[0])}</div>` : ''}
         <div class="fb-actions">
-          ${ex.cardId ? `<button class="linklike fb-flag">${ic('flag', 13)} flag</button>` : ''}
+          ${ex.cardId && !ex.cardId.startsWith('v:') ? `<button class="linklike fb-flag">${ic('flag', 13)} flag</button>` : ''}
           <button class="btn primary fb-next">Continue</button>
         </div>`;
       box.appendChild(fb);
@@ -1438,7 +1662,8 @@
       if (flagB) flagB.onclick = () => flagDialog(ex.cardId, ex.type);
       const nxt = fb.querySelector('.fb-next');
       nxt.focus();
-      nxt.onclick = () => opts.onResult(res, ex, ms);
+      // a second impatient tap must not double-advance (or double-finish) the session
+      nxt.onclick = () => { nxt.disabled = true; opts.onResult(res, ex, ms); };
       if (res.ok && CRO.audio.available() && item && (ex.type === 'tiles' || ex.type === 'produce' || ex.type === 'gap')) {
         CRO.audio.speak(item.hr || ex.audioText || '');
       }

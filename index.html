@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Imo i Nicro · hrvatski za nas dvoje</title>
   <meta name="theme-color" content="#1f6f8b">
   <link rel="manifest" href="manifest.webmanifest">
@@ -17,6 +17,25 @@
 </head>
 <body>
   <div id="app"></div>
+  <script>
+    // If startup dies before drawing anything, say so — never a silent blank screen.
+    (function () {
+      function show(msg) {
+        var app = document.getElementById('app');
+        if (!app || app.children.length) return; // app is drawing; it reports its own errors
+        app.innerHTML =
+          '<div style="max-width:34em;margin:18vh auto 0;padding:0 1.2em;font:16px/1.5 system-ui,sans-serif">' +
+          '<h2 style="margin:0 0 .4em">Something broke while starting</h2>' +
+          '<p style="color:#666;overflow-wrap:anywhere"></p>' +
+          '<button style="font:inherit;padding:.5em 1.1em" onclick="location.reload()">Reload</button></div>';
+        app.querySelector('p').textContent = msg || 'Unknown error';
+      }
+      window.addEventListener('error', function (e) { show(e.message); });
+      window.addEventListener('unhandledrejection', function (e) {
+        show((e.reason && e.reason.message) || String(e.reason));
+      });
+    })();
+  </script>
   <script src="js/icons.js"></script>
   <script src="js/srs.js"></script>
   <script src="js/db.js"></script>
