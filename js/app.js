@@ -22,7 +22,7 @@
     flags: [],
     variety: [],
     overrides: [],
-    settings: { retention: 0.9, newPerLesson: 4, showVariety: true, dailyGoalLessons: 1 },
+    settings: { retention: 0.9, newPerLesson: 4, showVariety: true, dailyGoalLessons: 1, theme: 'ljeto' },
     session: null,
     view: 'home',
     deviceId: null    // stable per-device id (activity keys, conflict tiebreak)
@@ -62,12 +62,20 @@
     if (!(await CRO.vault.isUnlocked())) { renderLock(); return; }
     await CRO.sync.init(); // pull partner's progress before loading state
     state.profiles = await CRO.db.getAll('profiles');
+    // partner colours (bougainvillea / sea): remap the old default hues once
+    let hueFix = false;
+    state.profiles.forEach(pr => {
+      if (pr.hue === 205) { pr.hue = 330; hueFix = true; }
+      else if (pr.hue === 16) { pr.hue = 190; hueFix = true; }
+    });
+    if (hueFix) for (const pr of state.profiles) await CRO.db.put('profiles', pr);
     state.overrides = await CRO.db.getAll('overrides');
     state.flags = await CRO.db.getAll('flags');
     state.variety = (await CRO.db.getAll('variety')).filter(v => !v.deleted);
     CRO.content.applyOverrides(state.overrides);
     const savedSettings = await CRO.db.getMeta('settings');
     if (savedSettings) Object.assign(state.settings, savedSettings);
+    applyTheme();
     state.activeId = await CRO.db.getMeta('activeProfile');
     if (state.profiles.length === 0) { render('onboarding'); return; }
     if (!state.activeId || !state.profiles.find(p => p.id === state.activeId)) {
@@ -82,6 +90,11 @@
     state.srs = {};
     all.filter(r => r.profileId === state.activeId)
        .forEach(r => { state.srs[r.cardId] = r; });
+  }
+
+  // Themes are device-local (settings never sync) — each of you keeps your own look.
+  function applyTheme() {
+    document.body.dataset.theme = state.settings.theme || 'ljeto';
   }
 
   function activeProfile() { return state.profiles.find(p => p.id === state.activeId); }
@@ -398,12 +411,12 @@
       });
       const n1 = $('#p1name').value.trim();
       if (!n1) { $('#p1name').focus(); return; }
-      const p1 = mk(n1, $('#p1known').checked, 205);
+      const p1 = mk(n1, $('#p1known').checked, 330); // bougainvillea
       await CRO.db.put('profiles', p1);
       state.profiles = [p1];
       const n2 = $('#p2name').value.trim();
       if (n2) {
-        const p2 = mk(n2, $('#p2known').checked, 16);
+        const p2 = mk(n2, $('#p2known').checked, 190); // sea
         await CRO.db.put('profiles', p2);
         state.profiles.push(p2);
       }
@@ -429,48 +442,47 @@
     const p = activeProfile();
     const partner = otherProfile();
 
-    // streak band — leads with YOUR own streak (never hostage to your partner),
-    // with the shared "together" count as a smaller second line.
-    const band = el('section', 'band');
+    // hero — your streak leads (never hostage to your partner); the shared week
+    // lives in the same card, painted in your two partner colours
+    const band = el('section', 'hero');
     const lit = sInfo.youDone; // your flame lights when YOU practise
     let streakNote;
     if (sInfo.youDone && sInfo.partnerDone && partner) streakNote = 'Both done today — nice.';
     else if (sInfo.youDone && partner) streakNote = `You're done. ${esc(partner.name)} can pick it up whenever.`;
     else if (!sInfo.youDone && sInfo.partnerDone && partner) streakNote = `${esc(partner.name)} went today — join when you get a minute.`;
     else streakNote = 'A few minutes keeps it going.';
-    band.innerHTML = `
-      <div class="streakbox">
-        <span class="${lit ? 'flame lit' : 'flame'}">${ic(lit ? 'flame' : 'flameDim', 30)}</span>
-        <div>
-          <div class="streak-n">${sInfo.yourStreak}</div>
-          <div class="streak-lbl">day streak${partner ? ` · ${sInfo.streak} together` : ''}</div>
-        </div>
-        <p class="streak-note">${streakNote}</p>
-      </div>`;
     const weeklyMode = state.settings.weeklyMode || 'together';
-    if (partner && weeklyMode !== 'off') {
-      const a = scores[p.id] || 0, b = scores[partner.id] || 0;
-      const wk = el('div', 'h2h');
-      if (weeklyMode === 'duel') {
-        const max = Math.max(a, b, 1);
-        const lead = a === b ? 'Dead heat this week.' : (a > b ? `${esc(p.name)} leads this week!` : `${esc(partner.name)} leads this week!`);
-        wk.innerHTML = `
-          <div class="h2h-title">${ic('trophy', 16)} Tjedni dvoboj <span class="h2h-sub">· weekly duel</span></div>
-          <div class="h2h-row"><span class="h2h-name">${esc(p.name)}</span><div class="h2h-bar"><div style="width:${Math.round(a / max * 100)}%; background:hsl(${p.hue} 55% 52%)"></div></div><span class="h2h-xp">${a}</span></div>
-          <div class="h2h-row"><span class="h2h-name">${esc(partner.name)}</span><div class="h2h-bar"><div style="width:${Math.round(b / max * 100)}%; background:hsl(${partner.hue} 55% 52%)"></div></div><span class="h2h-xp">${b}</span></div>
-          <div class="h2h-lead">${lead}</div>`;
-      } else {
-        // 'together' — one combined total this week, both contributions stacked
-        const total = a + b;
-        const aw = total ? Math.round(a / total * 100) : 50;
-        wk.innerHTML = `
-          <div class="h2h-title">${ic('trophy', 16)} Ovaj tjedan zajedno <span class="h2h-sub">· together this week</span></div>
-          <div class="h2h-bar wide"><div style="width:${aw}%; background:hsl(${p.hue} 55% 52%)"></div><div style="width:${100 - aw}%; background:hsl(${partner.hue} 55% 52%)"></div></div>
-          <div class="h2h-lead">${total} XP together — ${esc(p.name)} ${a}, ${esc(partner.name)} ${b}</div>`;
-      }
-      band.appendChild(wk);
-    }
+    const a = scores[p.id] || 0, b = partner ? (scores[partner.id] || 0) : 0;
+    const total = a + b;
+    const aw = total ? Math.round(a / total * 100) : 50;
+    const together = !!partner && weeklyMode === 'together';
+    band.innerHTML = `
+      <div class="hero-row">
+        <div class="hero-streak">
+          <span class="${lit ? 'flame lit' : 'flame'}">${ic(lit ? 'flame' : 'flameDim', 30)}</span>
+          <div>
+            <div class="streak-n">${sInfo.yourStreak}</div>
+            <div class="streak-lbl">day streak${partner ? ` · ${sInfo.streak} together` : ''}</div>
+          </div>
+        </div>
+        ${together ? `<div class="hero-week"><div class="streak-lbl">this week</div><div class="hero-xp">${total} XP</div></div>` : ''}
+      </div>
+      ${together ? `
+      <div class="h2h-bar wide"><div style="width:${aw}%"></div><div style="width:${100 - aw}%"></div></div>
+      <div class="h2h-lead">${esc(p.name)} ${a} · ${esc(partner.name)} ${b} — zajedno · together</div>` : ''}
+      <p class="streak-note">${streakNote}</p>`;
     main.appendChild(band);
+    if (partner && weeklyMode === 'duel') {
+      const wk = el('div', 'h2h');
+      const max = Math.max(a, b, 1);
+      const lead = a === b ? 'Dead heat this week.' : (a > b ? `${esc(p.name)} leads this week!` : `${esc(partner.name)} leads this week!`);
+      wk.innerHTML = `
+        <div class="h2h-title">${ic('trophy', 16)} Tjedni dvoboj <span class="h2h-sub">· weekly duel</span></div>
+        <div class="h2h-row"><span class="h2h-name">${esc(p.name)}</span><div class="h2h-bar"><div style="width:${Math.round(a / max * 100)}%; background:hsl(${p.hue} 65% 52%)"></div></div><span class="h2h-xp">${a}</span></div>
+        <div class="h2h-row"><span class="h2h-name">${esc(partner.name)}</span><div class="h2h-bar"><div style="width:${Math.round(b / max * 100)}%; background:hsl(${partner.hue} 65% 52%)"></div></div><span class="h2h-xp">${b}</span></div>
+        <div class="h2h-lead">${lead}</div>`;
+      main.appendChild(wk);
+    }
 
     // big start button
     const unit = currentUnit();
@@ -507,9 +519,9 @@
         <div class="unit-head">
           <span class="unit-num">${u.n}</span>
           <div class="unit-titles"><div class="unit-hr">${u.hrTitle}</div><div class="unit-en">${u.title}</div></div>
-          <div class="unit-prog">${CRO.icons.sahovnica(8, Math.round(pct * 8), 10)}</div>
         </div>
         <p class="unit-blurb">${u.blurb}</p>
+        <div class="uprog"><div style="width:${Math.round(pct * 100)}%"></div></div>
         <div class="unit-actions"></div>`;
       const actions = card.querySelector('.unit-actions');
       if (pct < 1) {
@@ -830,6 +842,11 @@
         <select id="s-weekly">
           ${[['together', 'together — one combined total'], ['duel', 'duel — head to head'], ['off', 'off — hide it']].map(([v, t]) => `<option value="${v}" ${(state.settings.weeklyMode || 'together') === v ? 'selected' : ''}>${t}</option>`).join('')}
         </select></label>
+      <label>Izgled · theme
+        <select id="s-theme">
+          ${[['ljeto', 'Ljeto — limestone & coast brights'], ['bugenvilija', 'Bugenvilija — white & pink'], ['papir', 'Papir — quiet warm paper']].map(([v, t]) => `<option value="${v}" ${(state.settings.theme || 'ljeto') === v ? 'selected' : ''}>${t}</option>`).join('')}
+        </select></label>
+      <p class="hint">The theme stays on this device — each of you can keep your own look.</p>
       <p class="hint">${ic(audioOk ? 'speaker' : 'speakerOff', 14)} ${audioOk ? 'Croatian voice: ' + CRO.audio.voiceLabel() : 'No Croatian voice found. On Windows, add one under Settings → Time & Language → Speech → Add voices → Croatian; Chrome also ships a Google hrvatski voice when online.'}</p>
       <hr>
       <h3 class="settings-h">${ic('gear', 16)} App lock <span class="hint-inline">— optional, off by default</span></h3>
@@ -983,12 +1000,15 @@
 
     $('#s-new').onchange = saveSettings; $('#s-ret').onchange = saveSettings;
     $('#s-var').onchange = saveSettings; $('#s-weekly').onchange = saveSettings;
+    $('#s-theme').onchange = saveSettings;
     async function saveSettings() {
       state.settings.newPerLesson = parseInt($('#s-new').value, 10);
       state.settings.retention = parseFloat($('#s-ret').value);
       state.settings.showVariety = $('#s-var').checked;
       state.settings.weeklyMode = $('#s-weekly').value;
+      state.settings.theme = $('#s-theme').value;
       await CRO.db.setMeta('settings', state.settings);
+      applyTheme();
       toast('Saved.');
     }
     $('#s-export').onclick = async () => {

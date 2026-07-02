@@ -255,6 +255,15 @@ async function scenarioGist() {
   await sleep(120);
   check('D2: truncated backup refused — profiles untouched', (await win.CRO.db.getAll('profiles')).length === 2);
 
+  // T: themes — selectable per device, applied to <body>, persisted
+  win.CRO.app.render('settings'); await sleep(40);
+  check('T: theme select present', !!q('#s-theme'));
+  q('#s-theme').value = 'papir'; q('#s-theme').dispatchEvent(new win.Event('change')); await sleep(60);
+  check('T: theme applied to body', doc.body.dataset.theme === 'papir');
+  check('T: theme persisted in settings', (((await win.CRO.db.getMeta('settings')) || {}).theme) === 'papir');
+  q('#s-theme').value = 'ljeto'; q('#s-theme').dispatchEvent(new win.Event('change')); await sleep(40);
+  check('T: theme switches back', doc.body.dataset.theme === 'ljeto');
+
   // L: full lock cycle through the real UI
   await win.CRO.vault.enableLock(passBefore);
   await win.CRO.vault.lockNow();
