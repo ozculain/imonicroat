@@ -507,7 +507,7 @@ if (typeof window === 'undefined') { global.window = global; } // node test shim
     { n: 3, id: 'u3', title: 'Food & drink', hrTitle: 'Hrana i piće', blurb: 'Order like a local. The accusative — the object case — arrives with coffee.' },
     { n: 4, id: 'u4', title: 'Every day', hrTitle: 'Svaki dan', blurb: 'The verbs you will actually use, the three present-tense families, and the big idea: aspect.' },
     { n: 5, id: 'u5', title: 'Town & travel', hrTitle: 'Grad i putovanje', blurb: 'Going vs. being: the locative case, and the u/na direction switch.' },
-    { n: 6, id: 'u6', title: 'Shopping & numbers', hrTitle: 'Kupovina i brojevi', blurb: 'Numbers 1–10, prices in euros, and the genitive: a glass of water, a bottle of wine.' },
+    { n: 6, id: 'u6', title: 'Shopping & numbers', hrTitle: 'Kupovina i brojevi', blurb: 'Numbers to 100, prices in euros, and the genitive: a glass of water, a bottle of wine.' },
     { n: 7, id: 'u7', title: 'Time & days', hrTitle: 'Vrijeme i dani', blurb: 'Days of the week, parts of the day, making plans.' },
     { n: 8, id: 'u8', title: 'The past', hrTitle: 'Prošlost', blurb: 'One past tense to rule them all: the perfekt — and aspect doing the work of English tenses.' },
     { n: 9, id: 'u9', title: 'Giving & with', hrTitle: 'Dativ i instrumental', blurb: 'Coffee with milk, travelling by bus, helping each other: the dative and instrumental.' },

@@ -75,9 +75,9 @@
     const initial = (name || '?').trim().charAt(0).toUpperCase()
       .replace(/&/g, '&amp;').replace(/</g, '&lt;'); // names are user-entered
     return `<svg width="${size}" height="${size}" viewBox="0 0 40 40" aria-hidden="true">
-      <circle cx="20" cy="20" r="19" fill="hsl(${hue} 45% 88%)" stroke="hsl(${hue} 40% 55%)" stroke-width="1.5"/>
+      <circle cx="20" cy="20" r="19" fill="hsl(${hue} 62% 86%)" stroke="hsl(${hue} 58% 48%)" stroke-width="1.5"/>
       <text x="20" y="26.5" text-anchor="middle" font-family="Iowan Old Style, Palatino Linotype, Georgia, serif"
-        font-size="19" font-weight="600" fill="hsl(${hue} 45% 30%)">${initial}</text>
+        font-size="19" font-weight="600" fill="hsl(${hue} 60% 30%)">${initial}</text>
     </svg>`;
   }
 

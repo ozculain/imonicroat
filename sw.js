@@ -3,7 +3,7 @@
    from cache, silent refresh in the background, new version on next open. */
 'use strict';
 
-const VERSION = 'imonicroat-73a5f42ed3';
+const VERSION = 'imonicroat-5306b5aae4';
 const FILES = [
   './',
   'index.html',
