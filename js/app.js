@@ -40,7 +40,9 @@
   async function boot() {
     // offline-first PWA when hosted (no-op when opened from file://)
     if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) {
-      navigator.serviceWorker.register('sw.js').then(reg => {
+      // updateViaCache:'none' → update checks skip the CDN's 10-minute HTTP
+      // cache on sw.js, so a new deploy is picked up on the next open
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
         if (swWatched) return; // boot runs again after unlock — don't double-listen
         swWatched = true;
         reg.addEventListener('updatefound', () => {
